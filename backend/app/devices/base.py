@@ -120,7 +120,8 @@ class SystemState:
     temp_c: float | None = None
     temp_saturated: bool = False
     lux_level: int | None = None        # 0-4 等级，未标定，不是 lux
-    lux_adc: int | None = None          # 原始 ADC，串口文本报文里没有
+    lux_adc: int | None = None          # 光敏原始 ADC，仅 NodeB 直连(CAL 行)时有
+    temp_adc: int | None = None         # 热敏原始 ADC，同上
     fan_duty: int | None = None         # PWM 输出百分比，不是实测转速
     fan_mode: str = "auto"              # auto | manual
     window_state: str | None = None     # 软件状态，无位置反馈
@@ -170,6 +171,7 @@ class SystemState:
                 "temp_high": self.temp_high,
                 "lux_level": self.lux_level,
                 "lux_adc": self.lux_adc,
+                "temp_adc": self.temp_adc,
                 "fan_duty": self.fan_duty,
                 "fan_mode": self.fan_mode,
                 "window_state": self.window_state,

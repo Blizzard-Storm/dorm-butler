@@ -206,6 +206,16 @@ class SerialDeviceService(DeviceService):
         s.near = (r.distance_cm <= s.near_threshold) if r.distance_cm is not None else None
         s.crc_errors = r.crc_errors
 
+        # 标定行（CAL）带来的原始 ADC。只有 NodeB 直连模式才有；
+        # 经 NodeA 汇总时报文里没有这两个值，保持 None。
+        cal = self.parser.last_cal
+        if cal is not None and r.node_b_online:
+            s.lux_adc = cal.raw_rop
+            s.temp_adc = cal.raw_rt
+        else:
+            s.lux_adc = None
+            s.temp_adc = None
+
         # 文本报文里没有这些字段，必须保持未知，不能编
         s.door_state = None
         s.security_state = None
@@ -213,7 +223,6 @@ class SerialDeviceService(DeviceService):
         s.window_state = None
         s.vib_count = None
         s.door_count = None
-        s.lux_adc = None
 
         self._last_report = r
 
@@ -268,6 +277,7 @@ class SerialDeviceService(DeviceService):
             "readonly_reason": NO_DOWNLINK_REASON,
             "frames_ok": self.parser.lines_ok,
             "frames_bad": self.parser.lines_bad,
+            "cal_lines": self.parser.cal_ok,
             "bytes_dropped": self.parser.bytes_dropped,
             "last_bad_line": self.parser.last_bad_line,
         }
@@ -279,7 +289,8 @@ class SerialDeviceService(DeviceService):
             "ts": s.ts.isoformat(),
             "temp_c": s.temp_c,
             "lux_level": s.lux_level,
-            "lux_adc": None,
+            "lux_adc": s.lux_adc,
+            "temp_adc": s.temp_adc,
             "distance_cm": s.distance_cm,
             "distance_valid": s.distance_valid,
             "door_state": None,

@@ -25,7 +25,10 @@ class Telemetry(Base):
 
     temp_c: Mapped[float | None] = mapped_column(Float)
     lux_level: Mapped[int | None] = mapped_column(Integer)
-    lux_adc: Mapped[int | None] = mapped_column(Integer)
+    # 未标定的原始 ADC，0~1023。标定实验要的就是这两列。
+    # 只有 NodeB 直连模式（固件发 CAL 行）才有；经 NodeA 汇总时报文里没有，为 NULL。
+    lux_adc: Mapped[int | None] = mapped_column(Integer)      # 光敏 Rop 原始值
+    temp_adc: Mapped[int | None] = mapped_column(Integer)     # 热敏 Rt 原始值
     distance_cm: Mapped[int | None] = mapped_column(Integer)
     distance_valid: Mapped[bool] = mapped_column(Boolean, default=False)
     door_state: Mapped[str | None] = mapped_column(String(16))

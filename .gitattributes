@@ -1,0 +1,30 @@
+# ==================================================================
+#  单片机固件的编码约定
+# ==================================================================
+#
+#  ！！固件的 .c 文件是 GBK 编码，.H 头文件混有 GBK 和 UTF-8。
+#
+#  绝对不要为了让 GitHub 网页预览好看而批量转成 UTF-8 ——
+#  Keil C51 读 UTF-8 的中文注释会出问题，轻则乱码重则编译报错。
+#
+#  下面把固件源码标成二进制，Git 就不会去动它们的换行和编码，
+#  代价是网页上看这些文件会显示乱码、diff 也不按行显示。
+#  要看内容请 clone 下来用 Keil 或支持 GBK 的编辑器打开。
+#
+firmware/**/*.c    -text -diff
+firmware/**/*.h    -text -diff
+firmware/**/*.H    -text -diff
+
+# Keil 工程文件是 XML，可以正常做文本 diff
+firmware/**/*.uvproj  text eol=crlf
+
+# BSP 库和烧录文件是二进制，别做任何转换
+firmware/**/*.LIB  binary
+firmware/**/*.hex  -text
+
+# 上位机这边统一 LF，跨平台一致
+*.py     text eol=lf
+*.ts     text eol=lf
+*.vue    text eol=lf
+*.md     text eol=lf
+*.json   text eol=lf

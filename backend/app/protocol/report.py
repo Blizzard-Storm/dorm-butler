@@ -41,6 +41,22 @@ _PATTERN = re.compile(
 
 MAX_BUFFER = 4096  # 噪声保护：超过这个长度还没等到换行就丢弃重新同步
 
+# 标定行。NodeB 单板直连模式下每秒一条，与主报文错开约 500mS：
+#     CAL RT=0465 ROP=0712
+# 这是【未标定的原始 ADC】，只用于标定实验与诊断，
+# 前端必须标注为"原始 ADC"，不得当作照度或温度这类物理量显示。
+_CAL_PATTERN = re.compile(r"^CAL RT=(?P<rt>\d{4}) ROP=(?P<rop>\d{4})$")
+
+
+@dataclass
+class CalReading:
+    """一行标定数据。"""
+
+    received_at: datetime
+    raw_rt: int       # 热敏原始 ADC 0~1023
+    raw_rop: int      # 光敏原始 ADC 0~1023
+    raw: str
+
 
 @dataclass
 class Report:
@@ -73,11 +89,17 @@ class ReportParser:
     buffer: bytearray = field(default_factory=bytearray)
     lines_ok: int = 0
     lines_bad: int = 0
+    cal_ok: int = 0
     bytes_dropped: int = 0
     last_bad_line: str = ""
+    last_cal: CalReading | None = None
 
     def feed(self, chunk: bytes) -> Iterator[Report]:
-        """喂入任意长度的串口数据，产出其中所有完整且合法的报文。"""
+        """喂入任意长度的串口数据，产出其中所有完整且合法的【主报文】。
+
+        标定行不通过返回值产出，而是记在 last_cal 上 —— 它是诊断/标定用的
+        旁路数据，不该干扰主状态流。
+        """
         self.buffer.extend(chunk)
 
         if len(self.buffer) > MAX_BUFFER:
@@ -95,6 +117,18 @@ class ReportParser:
 
     def _parse_line(self, raw_line: bytes) -> Report | None:
         text = raw_line.decode("ascii", errors="replace").rstrip("\r")
+
+        # 按首字符分流：标定行以 CAL 开头，主报文以 [ 开头
+        cal = _CAL_PATTERN.match(text)
+        if cal is not None:
+            self.cal_ok += 1
+            self.last_cal = CalReading(
+                received_at=datetime.now(timezone.utc),
+                raw_rt=int(cal.group("rt")),
+                raw_rop=int(cal.group("rop")),
+                raw=text,
+            )
+            return None
 
         # 噪声重同步：一行里可能混进前导垃圾字节，从最后一个 '[' 重新起算
         if len(text) != REPORT_BODY_LEN and "[" in text:

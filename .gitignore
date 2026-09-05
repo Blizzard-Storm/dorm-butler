@@ -7,6 +7,8 @@ __pycache__/
 # 运行期数据与密钥
 backend/data/
 backend/.env
+backend/.env.*
+!backend/.env.example
 *.db
 *.log
 
@@ -21,3 +23,25 @@ frontend/.vite/
 .vscode/
 .idea/
 frontend/tsconfig.tsbuildinfo
+
+# ==================================================================
+# 单片机固件（Keil C51）
+# ==================================================================
+# 编译中间产物：每次编译都变，两人同时编译必冲突
+firmware/*/output/*
+firmware/*/list/*
+# 但 .hex 保留 —— 让队友和老师不装 Keil 也能直接烧板子，
+# 跟 frontend/dist 一个道理。改了固件记得重新编译并把 hex 一起提交。
+!firmware/*/output/*.hex
+
+# Keil 的用户界面配置：记录窗口位置、断点、当前打开的文件，
+# 每台电脑都不一样，提交进来必然天天冲突，而且没有任何价值
+firmware/**/*.uvopt
+firmware/**/*.uvgui*
+firmware/**/*.bak
+firmware/**/*.bak-*
+firmware/**/*.bak2*
+firmware/**/*.dep
+
+# 本地临时备份
+*.zip

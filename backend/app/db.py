@@ -111,7 +111,10 @@ class Recorder:
 
     def _save_telemetry(self, p: dict) -> None:
         ts = _parse_ts(p.get("ts"))
-        period = _settings.telemetry_period_s
+        # 留 10% 容差再判丢弃。数据源本身就按 period 发送时（NodeA/NodeB 每秒一行），
+        # 板上晶振偏快一点点就会让实际间隔变成 0.99s，严格比较会把每隔一条全丢掉，
+        # 实测采样率因此掉到 0.5Hz。节流的目的是挡突发，不是挡正常速率。
+        period = _settings.telemetry_period_s * 0.9
         if self._last_telemetry_at and (ts - self._last_telemetry_at).total_seconds() < period:
             return
         self._last_telemetry_at = ts
@@ -121,6 +124,7 @@ class Recorder:
                 temp_c=p.get("temp_c"),
                 lux_level=p.get("lux_level"),
                 lux_adc=p.get("lux_adc"),
+                temp_adc=p.get("temp_adc"),
                 distance_cm=p.get("distance_cm"),
                 distance_valid=bool(p.get("distance_valid")),
                 door_state=p.get("door_state"),
