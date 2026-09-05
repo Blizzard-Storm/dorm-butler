@@ -29,6 +29,67 @@ STC-B 三节点智能宿舍系统的电脑后台与手机/电脑通用网页前�
 
 ---
 
+---
+
+## 一键安装（给队友 / 换电脑用）
+
+**前提**：电脑装了 [Python 3.11+](https://www.python.org/downloads/)（安装时勾选 **Add python.exe to PATH**）和 [Git](https://git-scm.com/downloads)。
+**不需要装 Node.js** —— 前端已经构建好一起放在仓库里了。
+
+### 方法一：一条命令（推荐）
+
+按 `Win + R`，输入 `cmd` 回车，把下面这一整行粘贴进去按回车：
+
+```bat
+git clone https://github.com/Blizzard-Storm/dorm-butler.git "%USERPROFILE%\Desktop\寝室管家上位机" && cd /d "%USERPROFILE%\Desktop\寝室管家上位机" && setup.cmd
+```
+
+它会自动完成：下载到桌面 → 建虚拟环境 → 装依赖 → 生成配置 → 启动服务 → 打开浏览器。
+全程约 2 分钟，中间不需要你操作。
+
+### 方法二：手动三步
+
+```bat
+git clone https://github.com/Blizzard-Storm/dorm-butler.git
+cd dorm-butler
+setup.cmd
+```
+
+### 装好之后
+
+- **本机打开**：<http://localhost:8000>
+- **手机打开**：先在电脑上跑 `ipconfig` 查到 IPv4 地址（形如 `192.168.1.7`），
+  手机连同一个 WiFi，浏览器开 `http://192.168.1.7:8000`
+- **下次启动**：不用再跑 `setup.cmd`，直接双击桌面文件夹里的 **`start-backend.cmd`**
+- **停止服务**：关掉那个黑色命令行窗口
+
+### 仓库是私有的
+
+队友 clone 之前需要：
+
+1. 你在 GitHub 仓库页面 → Settings → Collaborators 把队友加进来，**并且**
+2. 队友本机装了 Git 并登录过 GitHub（或装 [GitHub CLI](https://cli.github.com/) 后跑一次 `gh auth login`）
+
+如果想让任何人都能直接下载，把仓库改成公开：
+
+```bash
+gh repo edit Blizzard-Storm/dorm-butler --visibility public
+```
+
+⚠️ 公开之后同班同学也能搜到并复制，课程作业请自行权衡。
+
+### 常见问题
+
+| 现象 | 原因与处理 |
+|---|---|
+| `git 不是内部或外部命令` | 没装 Git，去 <https://git-scm.com/downloads> 装完重开 cmd |
+| `python 不是内部或外部命令` | 装 Python 时没勾 Add to PATH，重装并勾上 |
+| 依赖装到一半失败 | 网络问题。用清华镜像重试：<br>`.venv\Scripts\python.exe -m pip install -r backendequirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple` |
+| 浏览器打不开页面 | 黑窗口是不是关掉了？重新双击 `start-backend.cmd` |
+| 手机连不上 | Windows 防火墙拦了，第一次运行时弹的框要选"允许专用网络访问" |
+| 页面白屏 | `Ctrl + F5` 强制刷新 |
+
+
 ## 快速开始
 
 ### 环境要求
