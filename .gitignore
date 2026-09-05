@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 运行期数据与密钥
+backend/data/
+backend/.env
+*.db
+*.log
+
+# 前端
+frontend/node_modules/
+# 注意：frontend/dist 故意【提交】进仓库。
+# 这样别人 clone 下来不装 Node.js 也能直接运行，一键安装脚本才成立。
+# 改了前端源码后请 npm run build 并把 dist 一起提交。
+frontend/.vite/
+
+# 编辑器
+.vscode/
+.idea/
+frontend/tsconfig.tsbuildinfo
