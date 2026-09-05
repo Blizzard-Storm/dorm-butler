@@ -32,7 +32,7 @@ const minutes = ref(10)
 const active = ref<string[]>(['temp_c', 'fan_duty'])
 const points = ref<HistoryPoint[]>([])
 const loading = ref(false)
-const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches
+const dark = false
 let timer: number | undefined
 
 async function load() {

@@ -6,7 +6,7 @@ import {
 } from 'naive-ui'
 import { DoorOpen, Fan, Lock, ShieldOff, Thermometer, VolumeX, Wind } from 'lucide-vue-next'
 import { ApiError, api, type CommandAck } from '../api'
-import { CMD_STATUS_TEXT, state, statusType, ui } from '../store'
+import { CMD_STATUS_TEXT, state, statusType, ui, online } from '../store'
 
 const message = useMessage()
 const s = computed(() => state.value)
@@ -77,10 +77,10 @@ watch(s, (v) => {
 }, { immediate: true })
 
 const cap = (name: string) => s.value?.capabilities[name]
-const canDo = (name: string) => cap(name)?.supported !== false
+const canDo = (name: string) => online.value && cap(name)?.supported === true
 
 const armed = computed(() =>
-  s.value?.security.security_state === 'armed' || s.value?.security.security_state === 'arming')
+  ['armed', 'arming', 'alarm'].includes(s.value?.security.security_state ?? ''))
 
 const alarming = computed(() => (s.value?.security.alarm_level ?? 0) >= 2)
 </script>

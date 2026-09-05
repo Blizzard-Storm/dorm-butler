@@ -43,8 +43,8 @@ const display = computed(() => {
 <style scoped>
 .card {
   background: var(--card); border: 1px solid var(--border);
-  border-radius: 14px; padding: 14px 15px;
-  display: flex; flex-direction: column; gap: 5px; min-height: 104px;
+  border-radius: 8px; padding: 20px;
+  display: flex; flex-direction: column; gap: 12px; min-height: 152px;
   transition: border-color .2s;
 }
 .card.dim { opacity: .72; }
@@ -52,16 +52,15 @@ const display = computed(() => {
 .label { font-size: 12.5px; color: var(--muted); font-weight: 500; }
 .icon { color: var(--muted); flex-shrink: 0; }
 .value {
-  font-size: 27px; font-weight: 650; line-height: 1.15;
+  font-size: 30px; font-weight: 600; line-height: 1.15;
   display: flex; align-items: baseline; gap: 4px; letter-spacing: -.01em;
 }
 .value .unknown { font-size: 19px; font-weight: 500; color: var(--muted); }
 .unit { font-size: 13px; font-weight: 500; color: var(--muted); }
-.note { font-size: 10.5px; color: var(--muted); opacity: .85; margin-top: auto; }
+.note { font-size: 12px; color: var(--muted); margin-top: auto; }
 .hint { font-size: 10.5px; color: var(--muted); }
 
-.tone-good  { border-color: #2f9e6b44; }
-.tone-good  .value { color: #2f9e6b; }
+.tone-good .icon { color: #167d8d; }
 .tone-warn  { border-color: #c8891f55; }
 .tone-warn  .value { color: #c8891f; }
 .tone-bad   { border-color: #d8434366; background: #d8434309; }

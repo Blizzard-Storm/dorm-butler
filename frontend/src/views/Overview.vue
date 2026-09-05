@@ -1,187 +1,46 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { NAlert, NSpin, NTag } from 'naive-ui'
-import {
-  Clock, DoorClosed, Fan, Gauge, Radio, Ruler, ShieldCheck, Sun, Thermometer, Wind,
-} from 'lucide-vue-next'
+import {computed} from 'vue'
+import {NAlert,NSpin} from 'naive-ui'
+import {Fan,Sun,Thermometer,Ruler,ArrowUpRight,ShieldCheck,Radio,Activity} from 'lucide-vue-next'
 import StatCard from '../components/StatCard.vue'
-import {
-  SEC_STATE_TEXT, fmtTime, luxText, overallStatus, relTime, state,
-} from '../store'
-
-const s = computed(() => state.value)
-
-const tempTone = computed(() => {
-  const t = s.value?.env.temp_c
-  if (t === null || t === undefined) return 'normal'
-  const th = s.value?.settings.temp_threshold ?? 28
-  if (t >= th + 3) return 'bad'
-  if (t >= th) return 'warn'
-  return 'good'
-})
-
-const alarmTone = computed(() => {
-  const lv = s.value?.security.alarm_level
-  if (lv === null || lv === undefined) return 'normal'
-  return lv >= 2 ? 'bad' : lv === 1 ? 'warn' : 'good'
-})
-
-const alarmText = computed(() => {
-  const lv = s.value?.security.alarm_level
-  if (lv === null || lv === undefined) return null
-  return ['无报警', '提示', '报警'][lv] ?? '未知'
-})
-
-const secTone = computed(() => {
-  const st = s.value?.security.security_state
-  if (st === 'alarm') return 'bad'
-  if (st === 'armed' || st === 'arming') return 'warn'
-  return 'normal'
-})
-
-const doorTone = computed(() =>
-  s.value?.security.door_state === 'open'
-    ? (s.value?.security.security_state === 'armed' ? 'bad' : 'warn')
-    : 'normal')
-
-const nodeList = computed(() => [
-  { key: 'A', name: '节点A 主控网关', place: '书桌', info: s.value?.nodes.A },
-  { key: 'B', name: '节点B 环境节点', place: '窗台', info: s.value?.nodes.B },
-  { key: 'C', name: '节点C 安防节点', place: '门口', info: s.value?.nodes.C },
-])
-
-const countdown = computed(() => s.value?.link.arm_countdown ?? 0)
+import TemperatureTrend from '../components/TemperatureTrend.vue'
+import {SEC_STATE_TEXT,fmtTime,luxText,overallStatus,relTime,state,events,online} from '../store'
+const s=computed(()=>state.value)
+const recent=computed(()=>events.value.slice(0,4))
+const nodeList=computed(()=>[{key:'A',name:'主控网关',role:'数据汇总 / RS485 主站',info:s.value?.nodes.A},{key:'B',name:'环境节点',role:'温度 / 光照 / 通风',info:s.value?.nodes.B},{key:'C',name:'安防节点',role:'门磁 / 距离 / 报警',info:s.value?.nodes.C}])
+const tempTone=computed(()=>{const t=s.value?.env.temp_c;if(t==null)return 'normal';const th=s.value?.settings.temp_threshold??28;return t>=th+3?'bad':t>=th?'warn':'normal'})
+const securityText=computed(()=>s.value?.security.security_state?SEC_STATE_TEXT[s.value.security.security_state]:'未知')
+const alarmText=computed(()=>s.value?.security.alarm_level==null?'未知':['无报警','接近提示','报警中'][s.value.security.alarm_level]??'未知')
 </script>
-
 <template>
-  <div class="page">
-    <div v-if="!s" class="loading"><NSpin size="large" /><p>正在连接后台…</p></div>
-
-    <template v-else>
-      <!-- 头部状态条 -->
-      <div class="hero" :class="`hero-${overallStatus.type}`">
-        <div>
-          <div class="hero-status">{{ overallStatus.text }}</div>
-          <div class="hero-sub">
-            板上时间 {{ s.board_time ?? '—' }} ·
-            最近更新 {{ relTime(s.link.last_frame_at) }}
-            <span v-if="s.link.last_frame_at">（{{ fmtTime(s.link.last_frame_at) }}）</span>
-          </div>
-        </div>
-        <Clock :size="26" class="hero-icon" />
-      </div>
-
-      <NAlert v-if="countdown > 0" type="warning" :bordered="false" style="margin-bottom:14px">
-        布防退出延时中，剩余 {{ countdown }} 秒 —— 请在倒计时结束前离开
-      </NAlert>
-
-      <NAlert
-        v-if="s.link.readonly" type="info" :bordered="false" style="margin-bottom:14px"
-        title="当前为只读监控模式"
-      >
-        {{ s.link.readonly_reason }}
-      </NAlert>
-
-      <!-- 环境 -->
-      <div class="section-title">环境 · 节点B</div>
-      <div class="grid">
-        <StatCard
-          label="温度" :value="s.env.temp_c" unit="℃" :icon="Thermometer" :tone="tempTone"
-          :note="s.env.temp_saturated ? '读数已达固件上限 99.9℃' : `风扇阈值 ${s.settings.temp_threshold}℃`"
-        />
-        <StatCard
-          label="光照" :value="s.env.lux_level === null ? null : luxText(s.env.lux_level)"
-          :icon="Sun" note="未标定等级 0-4，不是 lux"
-        />
-        <StatCard
-          label="风扇输出" :value="s.env.fan_duty" unit="%" :icon="Fan"
-          :tone="(s.env.fan_duty ?? 0) > 0 ? 'good' : 'normal'"
-          :note="`PWM 占空比，非实测转速 · ${s.env.fan_mode === 'manual' ? '手动' : '自动'}模式`"
-        />
-        <StatCard
-          label="通风窗" :icon="Wind"
-          :value="s.env.window_state === null ? null : (s.env.window_state === 'open' ? '已打开' : '已关闭')"
-          note="软件状态，无位置反馈"
-        />
-      </div>
-
-      <!-- 安防 -->
-      <div class="section-title">安防 · 节点C</div>
-      <div class="grid">
-        <StatCard
-          label="安防状态" :icon="ShieldCheck" :tone="secTone"
-          :value="s.security.security_state === null ? null : SEC_STATE_TEXT[s.security.security_state]"
-          :note="s.security.lock_state === null ? '' : `门锁 ${s.security.lock_state === 'locked' ? '已上锁' : '未上锁'}（软件状态）`"
-        />
-        <StatCard
-          label="门磁" :icon="DoorClosed" :tone="doorTone"
-          :value="s.security.door_state === null ? null : (s.security.door_state === 'open' ? '门已打开' : '门已关闭')"
-          :note="s.security.door_count === null ? '' : `累计开门 ${s.security.door_count} 次`"
-        />
-        <StatCard
-          label="门口距离" :value="s.security.distance_cm" unit="cm" :icon="Ruler" :digits="0"
-          :tone="s.security.near ? 'warn' : 'normal'"
-          :note="s.security.distance_valid
-            ? (s.security.near ? `低于接近阈值 ${s.settings.near_threshold}cm` : `接近阈值 ${s.settings.near_threshold}cm`)
-            : '超声波无有效回波'"
-        />
-        <StatCard
-          label="报警等级" :value="alarmText" :icon="Gauge" :tone="alarmTone"
-          :note="s.security.vib_count === null ? '' : `累计异动 ${s.security.vib_count} 次`"
-        />
-      </div>
-
-      <!-- 节点 -->
-      <div class="section-title">节点在线状态</div>
-      <div class="nodes">
-        <div v-for="n in nodeList" :key="n.key" class="node" :class="{ off: !n.info?.online }">
-          <div class="node-left">
-            <Radio :size="17" />
-            <div>
-              <div class="node-name">{{ n.name }}</div>
-              <div class="node-place">{{ n.place }} · 最后通信 {{ relTime(n.info?.last_seen) }}</div>
-            </div>
-          </div>
-          <NTag :type="n.info?.online ? 'success' : 'error'" size="small" round>
-            {{ n.info?.online ? '在线' : '离线' }}
-          </NTag>
-        </div>
-      </div>
-
-      <div class="footnote">
-        485 总线 CRC 累计错误 <b>{{ s.diagnostics.crc_errors }}</b> ·
-        已解析报文 {{ s.diagnostics.frames_ok }} 行 ·
-        坏行 {{ s.diagnostics.frames_bad }} 行
-      </div>
-    </template>
-  </div>
+<div class="page">
+<div v-if="!s" class="loading"><NSpin/><p>正在读取设备状态…</p></div>
+<template v-else>
+<div class="status-line"><span :class="overallStatus.type"><i/>{{overallStatus.text}}</span><span>最近通信 {{relTime(s.link.last_frame_at)}}</span><RouterLink to="/system">查看连接<ArrowUpRight :size="14"/></RouterLink></div>
+<NAlert v-if="s.link.readonly" type="info" :bordered="false" style="margin-bottom:16px" title="只读监控">{{s.link.readonly_reason}}</NAlert>
+<NAlert v-if="(s.link.arm_countdown??0)>0" type="warning" :bordered="false" style="margin-bottom:16px">布防将在 {{s.link.arm_countdown}} 秒后生效，请及时离开。</NAlert>
+<div class="grid">
+<StatCard label="室内温度" :value="s.env.temp_c" unit="℃" :icon="Thermometer" :tone="tempTone" :note="s.env.temp_saturated?'读数达到固件上限':s.link.mode==='serial'?'环境节点 · 温度采样':'自动控制阈值 '+s.settings.temp_threshold+'℃'"/>
+<StatCard label="光照等级" :value="s.env.lux_level===null?null:luxText(s.env.lux_level)" :icon="Sun" note="0–4 档 · 未进行照度标定"/>
+<StatCard label="风扇 PWM" :value="s.env.fan_duty" unit="%" :icon="Fan" :note="s.link.mode==='serial'?'输出占空比 · 运行模式未知':(s.env.fan_mode==='manual'?'手动模式':'自动模式')+' · 非实测转速'"/>
+<StatCard label="门口距离" :value="s.security.distance_cm" unit="cm" :digits="0" :icon="Ruler" :tone="s.security.near?'warn':'normal'" :note="s.security.distance_valid?'超声波有效读数':'暂无有效回波'"/>
+</div>
+<div class="dashboard-columns">
+<section class="panel"><div class="panel-head"><h2>温度趋势</h2><RouterLink to="/analytics">全部数据<ArrowUpRight :size="14"/></RouterLink></div><div class="chart-sub"><span class="legend-mark"/>室内温度<span class="range">最近 10 分钟</span></div><TemperatureTrend/></section>
+<section class="panel"><div class="panel-head"><h2><ShieldCheck :size="17"/>安防与设备</h2><RouterLink to="/control">控制<ArrowUpRight :size="14"/></RouterLink></div><dl class="device-list">
+<div><dt>布防状态</dt><dd>{{securityText}}</dd></div>
+<div><dt>门磁</dt><dd>{{s.security.door_state===null?'未知':s.security.door_state==='open'?'门已打开':'门已关闭'}}</dd></div>
+<div><dt>报警</dt><dd :class="{danger:(s.security.alarm_level??0)>=2}">{{alarmText}}</dd></div>
+<div><dt>通风窗<small>软件状态</small></dt><dd>{{s.env.window_state===null?'未知':s.env.window_state==='open'?'打开':'关闭'}}</dd></div>
+<div><dt>门锁<small>软件状态</small></dt><dd>{{s.security.lock_state===null?'未知':s.security.lock_state==='locked'?'上锁':'未上锁'}}</dd></div>
+</dl></section>
+<section class="panel"><div class="panel-head"><h2>最近事件</h2><RouterLink to="/events">全部记录<ArrowUpRight :size="14"/></RouterLink></div><div v-if="!recent.length" class="empty"><Activity :size="24"/><span>暂无事件记录</span></div><div v-for="(e,i) in recent" :key="e.id??i" class="event-item"><span class="event-marker" :class="e.level"/><div><p>{{e.message}}</p><small>节点 {{e.node}} · {{fmtTime(e.ts)}}</small></div></div></section>
+<section class="panel"><div class="panel-head"><h2>节点连接</h2><span class="muted">RS485 总线</span></div><div v-for="n in nodeList" :key="n.key" class="node-row"><span class="node-avatar">{{n.key}}</span><div><strong>{{n.name}}</strong><small>{{n.role}}</small></div><span class="node-state" :class="{connected:online&&n.info?.online}"><Radio :size="13"/>{{online?(n.info?.online?'在线':'离线'):'未确认'}}</span></div></section>
+</div>
+<div class="footnote">已解析 {{s.diagnostics.frames_ok}} 条报文 <span>解析异常 {{s.diagnostics.frames_bad}}</span><span>总线 CRC 错误 {{s.diagnostics.crc_errors}}</span></div>
+</template></div>
 </template>
-
 <style scoped>
-.loading { display: grid; place-items: center; gap: 12px; padding: 80px 0; color: var(--muted); }
-
-.hero {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 18px 20px; border-radius: 16px; margin-bottom: 6px;
-  border: 1px solid var(--border); background: var(--card);
-}
-.hero-success { border-color: #2f9e6b44; background: linear-gradient(135deg, #2f9e6b12, transparent); }
-.hero-warning { border-color: #c8891f55; background: linear-gradient(135deg, #c8891f14, transparent); }
-.hero-error   { border-color: #d8434366; background: linear-gradient(135deg, #d8434314, transparent); }
-.hero-status { font-size: 21px; font-weight: 660; letter-spacing: -.01em; }
-.hero-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
-.hero-icon { color: var(--muted); opacity: .6; }
-
-.nodes { display: flex; flex-direction: column; gap: 8px; }
-.node {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 15px; border-radius: 12px;
-  background: var(--card); border: 1px solid var(--border);
-}
-.node.off { opacity: .68; border-style: dashed; }
-.node-left { display: flex; align-items: center; gap: 11px; color: var(--muted); }
-.node-name { font-size: 14px; font-weight: 550; color: var(--text); }
-.node-place { font-size: 11.5px; color: var(--muted); }
-
-.footnote { margin-top: 22px; font-size: 11.5px; color: var(--muted); }
+.loading{padding:80px;text-align:center;color:var(--muted)}.status-line{display:flex;align-items:center;gap:20px;font-size:12px;color:var(--muted);margin-bottom:18px}.status-line>span:first-child{color:var(--text);font-weight:500}.status-line i{display:inline-block;width:7px;height:7px;border-radius:50%;background:#2a9275;margin-right:7px}.status-line .error i{background:#d14a4a}.status-line .warning i{background:#c78c27}a{display:inline-flex;align-items:center;gap:4px;text-decoration:none;color:var(--accent);font-size:12px}.status-line a{margin-left:auto}.dashboard-columns{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,1fr);gap:20px;margin-top:22px}.panel{background:white;border:1px solid var(--border);border-radius:8px;overflow:hidden}.panel-head{padding:18px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #edf0f3}.panel h2{margin:0;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}.chart-sub{display:flex;align-items:center;padding:15px 20px 0;gap:6px;font-size:11px;color:var(--muted)}.legend-mark{width:14px;height:2px;background:var(--accent)}.range{margin-left:auto}.device-list{margin:0;padding:0 20px}.device-list>div{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #f0f2f5;font-size:13px}.device-list>div:last-child{border:0}.device-list dt{color:var(--muted)}.device-list small{font-size:10px;margin-left:7px;color:#96a0ad}.device-list dd{margin:0;font-weight:500}.danger{color:#c34545}.event-item{display:flex;gap:12px;padding:14px 20px;border-bottom:1px solid #f0f2f5}.event-item:last-child{border:0}.event-marker{margin-top:7px;width:6px;height:6px;border-radius:50%;background:#a0aab5;flex-shrink:0}.event-marker.alarm{background:#d14a4a}.event-marker.warning{background:#c78c27}.event-item p{font-size:13px;margin:0 0 4px}.event-item small,.node-row small{font-size:11px;color:var(--muted)}.node-row{display:flex;align-items:center;gap:11px;margin:0 20px;padding:15px 0;border-bottom:1px solid #f0f2f5}.node-row:last-child{border:0}.node-avatar{width:33px;height:33px;background:#f1f4f7;display:grid;place-items:center;color:#738294;border-radius:6px;font-size:13px}.node-row strong{font-size:13px;font-weight:500;display:block}.node-row small{display:block;margin-top:2px}.node-state{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:#9aa3af}.node-state.connected{color:#299477}.muted{font-size:11px;color:var(--muted)}.empty{min-height:160px;display:flex;align-items:center;justify-content:center;gap:10px;color:#8b96a5;font-size:13px}.footnote{margin-top:20px;color:var(--muted);font-size:11px}.footnote span{margin-left:22px}
+@media(max-width:1050px){.dashboard-columns{grid-template-columns:1fr}}@media(max-width:520px){.status-line{gap:10px;font-size:11px}.status-line a{display:none}.footnote span{margin-left:12px}.panel-head{padding:16px}.device-list small{display:none}}
 </style>

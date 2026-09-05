@@ -112,7 +112,8 @@ export const online = computed(() => wsConnected.value && !!state.value?.link.co
 export const alarmActive = computed(() => (state.value?.security.alarm_level ?? 0) >= 2)
 
 export const overallStatus = computed<{ text: string; type: 'success' | 'warning' | 'error' | 'info' }>(() => {
-  if (!online.value) return { text: '后台离线', type: 'error' }
+  if (!wsConnected.value) return { text: '后台离线', type: 'error' }
+  if (!state.value?.link.connected) return { text: '设备链路断开', type: 'error' }
   if (alarmActive.value) return { text: '安防报警中', type: 'error' }
   const s = state.value
   if (!s) return { text: '加载中', type: 'info' }
