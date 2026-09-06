@@ -125,7 +125,7 @@ class SystemState:
     lux_adc: int | None = None          # 光敏原始 ADC，仅 NodeB 直连(CAL 行)时有
     temp_adc: int | None = None         # 热敏原始 ADC，同上
     fan_duty: int | None = None         # PWM 输出百分比，不是实测转速
-    fan_mode: str = "auto"              # auto | manual
+    fan_mode: str | None = "auto"       # auto | manual；节点离线/状态过期为 None
     window_state: str | None = None     # 软件状态，无位置反馈
     window_mode: str | None = None      # auto | manual；节点离线/旧固件为 None
     temp_high: bool | None = None

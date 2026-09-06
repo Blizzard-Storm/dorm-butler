@@ -248,6 +248,7 @@ class SerialDeviceService(DeviceService):
                 s.node_b.poll_miss = None
                 s.window_state = None
                 s.window_mode = None
+                s.fan_mode = None
 
             if r.node_c_online:
                 s.node_c.poll_miss = st.sec_poll_miss
@@ -271,6 +272,7 @@ class SerialDeviceService(DeviceService):
             s.door_state = s.security_state = s.lock_state = None
             s.window_state = None
             s.window_mode = None
+            s.fan_mode = None
             s.vib_count = s.door_count = None
             s.silenced = None
 
@@ -336,6 +338,7 @@ class SerialDeviceService(DeviceService):
                 s.door_state = s.security_state = s.lock_state = None
                 s.window_state = None
                 s.window_mode = None
+                s.fan_mode = None
                 s.vib_count = s.door_count = None
                 s.silenced = None
                 s.near = s.temp_high = None

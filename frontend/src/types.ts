@@ -45,7 +45,7 @@ export interface SystemState {
     lux_level: number | null
     lux_adc: number | null
     fan_duty: number | null
-    fan_mode: 'auto' | 'manual'
+    fan_mode: 'auto' | 'manual' | null
     window_state: string | null
     window_mode: 'auto' | 'manual' | null
   }

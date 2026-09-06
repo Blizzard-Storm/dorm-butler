@@ -87,6 +87,26 @@ def test_status_line_populates_real_device_states_and_health(svc):
     assert telemetry["lock_state"] == "locked"
 
 
+def test_fan_mode_goes_unknown_when_node_b_drops(svc):
+    """风扇模式和窗户模式同源于 STA 的 env_flags，掉线后必须一起变未知。
+
+    以前 fan_mode 是不可为 None 的 str，节点B 掉线后它会一直停在掉线前的
+    "manual"，页面把过期状态当现状显示；window_mode 早就处理对了，两者应当一致。
+    """
+    feed(svc, b"STA BF=055 BP=002 CF=059 CS=2 V=012 D=003 CP=001 AP=000 L=12345 RB=0 RC=1\r\n")
+    feed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
+    assert svc.state.fan_mode == "manual"
+
+    # 节点B 掉线：窗态、窗模式、风扇模式都不该再显示掉线前的值
+    feed(svc, b"STA BF=055 BP=002 CF=059 CS=2 V=012 D=003 CP=001 AP=000 L=12345 RB=0 RC=1\r\n")
+    feed(svc, b"[21:30:06] T+235 L2 F040 D120 A0 O01 E000\r\n")
+    s = svc.state
+    assert s.node_b.online is False
+    assert s.fan_mode is None
+    assert s.window_mode is None
+    assert s.window_state is None
+
+
 def test_offline_slave_invalidates_readings(svc):
     feed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
     assert svc.state.temp_c == 23.5

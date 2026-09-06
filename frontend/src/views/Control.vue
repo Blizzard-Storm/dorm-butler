@@ -69,7 +69,7 @@ const touched = reactive({ fan: false, th: false, near: false })
 watch(s, (v) => {
   if (!v) return
   if (!touched.fan) {
-    fanMode.value = v.env.fan_mode
+    if (v.env.fan_mode != null) fanMode.value = v.env.fan_mode
     if (v.env.fan_mode === 'manual' && v.env.fan_duty !== null) fanDuty.value = v.env.fan_duty
   }
   if (!touched.th) threshold.value = v.settings.temp_threshold
@@ -128,7 +128,7 @@ const alarming = computed(() => (s.value?.security.alarm_level ?? 0) >= 2)
           </NButton>
           <span class="cur">
             当前：{{ s?.env.fan_duty ?? '未知' }}<template v-if="s?.env.fan_duty !== null">%</template>
-            · {{ s?.env.fan_mode === 'manual' ? '手动' : '自动' }}
+            · {{ s?.env.fan_mode == null ? '模式未知' : (s.env.fan_mode === 'manual' ? '手动' : '自动') }}
           </span>
         </div>
         <div class="note">显示的是 PWM 输出占空比，板上没有转速传感器，不代表实测转速。</div>
