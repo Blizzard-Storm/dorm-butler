@@ -116,6 +116,7 @@ def test_decode_sec_invalid_distance():
 
 
 GOOD = b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n"
+STATUS = b"STA BF=007 BP=000 CF=027 CS=2 V=012 D=003 CP=001 AP=000 L=12345 RB=0 RC=1\r\n"
 
 
 def test_report_length_matches_firmware():
@@ -135,6 +136,24 @@ def test_parse_good_report():
     assert r.alarm_level == 0
     assert r.node_b_online and r.node_c_online
     assert r.crc_errors == 0
+
+
+def test_parse_status_line_without_counting_it_as_bad_report():
+    parser = ReportParser()
+    assert list(parser.feed(STATUS)) == []
+    assert parser.lines_bad == 0
+    assert parser.status_ok == 1
+    st = parser.last_status
+    assert st is not None
+    assert st.env_flags == 7
+    assert st.env_poll_miss == 0
+    assert st.sec_flags == 27
+    assert st.sec_state == F.SECST_ARMED
+    assert st.vib_count == 12 and st.door_count == 3
+    assert st.sec_poll_miss == 1
+    assert st.master_poll_miss == 0
+    assert st.master_main_loops == 12345
+    assert (st.reply_miss_b, st.reply_miss_c) == (0, 1)
 
 
 def test_negative_temperature():

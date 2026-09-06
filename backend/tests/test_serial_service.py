@@ -63,6 +63,27 @@ def test_fields_absent_from_report_stay_unknown(svc):
     assert s.vib_count is None
 
 
+def test_status_line_populates_real_device_states_and_health(svc):
+    feed(svc, b"STA BF=007 BP=002 CF=027 CS=2 V=012 D=003 CP=001 AP=000 L=12345 RB=0 RC=1\r\n")
+    feed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
+    s = svc.state
+    assert s.window_state == "open"
+    assert s.temp_high is True
+    assert s.door_state == "open"
+    assert s.security_state == "armed"
+    assert s.lock_state == "locked"
+    assert s.near is True
+    assert (s.vib_count, s.door_count) == (12, 3)
+    assert (s.node_a.poll_miss, s.node_b.poll_miss, s.node_c.poll_miss) == (0, 2, 1)
+    assert s.main_loops == 12345
+    assert (s.master_reply_miss_b, s.master_reply_miss_c) == (0, 1)
+    telemetry = svc._telemetry()
+    assert telemetry["door_state"] == "open"
+    assert telemetry["security_state"] == "armed"
+    assert telemetry["window_state"] == "open"
+    assert telemetry["lock_state"] == "locked"
+
+
 def test_offline_slave_invalidates_readings(svc):
     feed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
     assert svc.state.temp_c == 23.5

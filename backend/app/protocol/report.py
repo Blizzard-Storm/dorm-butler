@@ -73,6 +73,18 @@ _CFG_PATTERN = re.compile(
     r"^CFG T=(?P<t>\d{2}) A=(?P<a>\d) H=(?P<h>\d{2}) M=(?P<m>\d{2}) N=(?P<n>\d{3})$"
 )
 
+# NodeA 每秒输出的详细状态与性能旁路报文：
+#   STA BF=003 BP=000 CF=017 CS=2 V=012 D=003 CP=000 AP=000 L=12345 RB=0 RC=0
+# BF/CF 是 B/C 节点状态位；BP/CP/AP 是三节点的 PollingMisses；
+# L 是 NodeA 每秒主循环数；RB/RC 是主站当前连续无应答计数。
+_STATUS_PATTERN = re.compile(
+    r"^STA BF=(?P<bf>\d{3}) BP=(?P<bp>\d{3}) "
+    r"CF=(?P<cf>\d{3}) CS=(?P<cs>\d) "
+    r"V=(?P<v>\d{3}) D=(?P<d>\d{3}) CP=(?P<cp>\d{3}) "
+    r"AP=(?P<ap>\d{3}) L=(?P<loops>\d{5}) "
+    r"RB=(?P<rb>\d) RC=(?P<rc>\d)$"
+)
+
 
 @dataclass
 class BoardCfg:
@@ -84,6 +96,25 @@ class BoardCfg:
     alarm_hour: int
     alarm_minute: int
     near_threshold: int
+    raw: str
+
+
+@dataclass
+class StatusReading:
+    """NodeA 汇总的节点状态与运行质量数据。"""
+
+    received_at: datetime
+    env_flags: int
+    env_poll_miss: int
+    sec_flags: int
+    sec_state: int
+    vib_count: int
+    door_count: int
+    sec_poll_miss: int
+    master_poll_miss: int
+    master_main_loops: int
+    reply_miss_b: int
+    reply_miss_c: int
     raw: str
 
 
@@ -133,10 +164,12 @@ class ReportParser:
     cal_ok: int = 0
     ack_ok: int = 0
     cfg_ok: int = 0
+    status_ok: int = 0
     bytes_dropped: int = 0
     last_bad_line: str = ""
     last_cal: CalReading | None = None
     last_cfg: BoardCfg | None = None
+    last_status: StatusReading | None = None
     # 收到的回执依次放进这里，由设备层取走匹配在途请求
     acks: list[Ack] = field(default_factory=list)
 
@@ -188,6 +221,32 @@ class ReportParser:
                 alarm_hour=int(cfg.group("h")),
                 alarm_minute=int(cfg.group("m")),
                 near_threshold=int(cfg.group("n")),
+                raw=text,
+            )
+            return None
+
+        status = _STATUS_PATTERN.match(text)
+        if status is not None:
+            values = {key: int(value) for key, value in status.groupdict().items()}
+            if (values["bf"] > 255 or values["cf"] > 255 or values["cs"] > 3
+                    or any(values[key] > 255 for key in ("bp", "v", "d", "cp", "ap"))):
+                self.lines_bad += 1
+                self.last_bad_line = text[:120]
+                return None
+            self.status_ok += 1
+            self.last_status = StatusReading(
+                received_at=datetime.now(timezone.utc),
+                env_flags=values["bf"],
+                env_poll_miss=values["bp"],
+                sec_flags=values["cf"],
+                sec_state=values["cs"],
+                vib_count=values["v"],
+                door_count=values["d"],
+                sec_poll_miss=values["cp"],
+                master_poll_miss=values["ap"],
+                master_main_loops=values["loops"],
+                reply_miss_b=values["rb"],
+                reply_miss_c=values["rc"],
                 raw=text,
             )
             return None

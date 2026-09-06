@@ -36,12 +36,6 @@ log = logging.getLogger(__name__)
 NODE_A_TIMEOUT_S = 5.0
 RECONNECT_INTERVAL_S = 2.0
 
-NO_DOWNLINK_REASON = (
-    "当前 NodeA 固件没有串口下行通道（main.c 中无 SetUart1Rxd 调用），"
-    "PC 只能只读监控。需按 docs/NodeA串口协议补充设计.md 升级固件后才能远程控制。"
-)
-
-
 def list_serial_ports() -> list[dict]:
     return [
         {"device": p.device, "description": p.description, "hwid": p.hwid}
@@ -191,6 +185,10 @@ class SerialDeviceService(DeviceService):
         prev_b, prev_c = s.node_b.online, s.node_c.online
         prev_alarm = s.alarm_level
         prev_crc = s.crc_errors
+        prev_door = s.door_state
+        prev_security = s.security_state
+        prev_window = s.window_state
+        prev_lock = s.lock_state
 
         s.ts = r.received_at
         s.last_frame_at = r.received_at
@@ -237,13 +235,44 @@ class SerialDeviceService(DeviceService):
             s.lux_adc = None
             s.temp_adc = None
 
-        # 文本报文里没有这些字段，必须保持未知，不能编
-        s.door_state = None
-        s.security_state = None
-        s.lock_state = None
-        s.window_state = None
-        s.vib_count = None
-        s.door_count = None
+        # STA 旁路报文与主报文分开发送。只接受 3 秒内的新状态，
+        # 否则置未知，避免把断线前的值当成当前状态。
+        st = self.parser.last_status
+        status_fresh = st is not None and abs((r.received_at - st.received_at).total_seconds()) <= 3.0
+        if status_fresh:
+            s.main_loops = st.master_main_loops
+            s.node_a.poll_miss = st.master_poll_miss
+            s.master_reply_miss_b = st.reply_miss_b
+            s.master_reply_miss_c = st.reply_miss_c
+
+            if r.node_b_online:
+                s.node_b.poll_miss = st.env_poll_miss
+                s.window_state = "open" if st.env_flags & F.ENVF_WIN_OPEN else "closed"
+                s.temp_high = bool(st.env_flags & F.ENVF_TEMP_HI)
+            else:
+                s.node_b.poll_miss = None
+                s.window_state = None
+
+            if r.node_c_online:
+                s.node_c.poll_miss = st.sec_poll_miss
+                s.door_state = "open" if st.sec_flags & F.SECF_DOOR_OPEN else "closed"
+                s.security_state = F.SECST_NAMES.get(st.sec_state)
+                s.lock_state = "locked" if st.sec_flags & F.SECF_LOCKED else "unlocked"
+                s.vib_count = st.vib_count
+                s.door_count = st.door_count
+                s.near = bool(st.sec_flags & F.SECF_NEAR)
+            else:
+                s.node_c.poll_miss = None
+                s.door_state = s.security_state = s.lock_state = None
+                s.vib_count = s.door_count = None
+                s.near = None
+        else:
+            s.main_loops = None
+            s.master_reply_miss_b = s.master_reply_miss_c = None
+            s.node_a.poll_miss = s.node_b.poll_miss = s.node_c.poll_miss = None
+            s.door_state = s.security_state = s.lock_state = None
+            s.window_state = None
+            s.vib_count = s.door_count = None
 
         self._last_report = r
 
@@ -255,6 +284,24 @@ class SerialDeviceService(DeviceService):
             await bus.publish(TOPIC_EVENT, _event(
                 "node", "info" if r.node_c_online else "warning",
                 f"节点C {'上线' if r.node_c_online else '离线'}", node="C"))
+        if (status_fresh and s.door_state is not None
+                and prev_door is not None and prev_door != s.door_state):
+            await bus.publish(TOPIC_EVENT, _event(
+                "security", "warning" if s.door_state == "open" else "info",
+                "门磁检测到开门" if s.door_state == "open" else "门磁检测到关门", node="C"))
+        if (status_fresh and s.security_state is not None
+                and prev_security is not None and prev_security != s.security_state):
+            await bus.publish(TOPIC_EVENT, _event(
+                "security", "warning" if s.security_state == "alarm" else "info",
+                f"安防状态变为 {s.security_state}", node="C"))
+        if (status_fresh and s.window_state is not None
+                and prev_window is not None and prev_window != s.window_state):
+            await bus.publish(TOPIC_EVENT, _event(
+                "window", "info", f"通风窗软件状态变为 {s.window_state}", node="B"))
+        if (status_fresh and s.lock_state is not None
+                and prev_lock is not None and prev_lock != s.lock_state):
+            await bus.publish(TOPIC_EVENT, _event(
+                "lock", "info", f"锁舌软件状态变为 {s.lock_state}", node="C"))
         if r.alarm_level is not None and prev_alarm != r.alarm_level:
             if r.alarm_level >= F.ALM_ALARM:
                 await bus.publish(TOPIC_EVENT, _event("security", "alarm", "安防报警触发", node="C"))
@@ -286,6 +333,13 @@ class SerialDeviceService(DeviceService):
                 s.temp_c = s.lux_level = s.fan_duty = None
                 s.distance_cm = s.alarm_level = None
                 s.distance_valid = False
+                s.door_state = s.security_state = s.lock_state = None
+                s.window_state = None
+                s.vib_count = s.door_count = None
+                s.near = s.temp_high = None
+                s.main_loops = None
+                s.master_reply_miss_b = s.master_reply_miss_c = None
+                s.node_a.poll_miss = s.node_b.poll_miss = s.node_c.poll_miss = None
                 await bus.publish(TOPIC_EVENT, _event(
                     "node", "warning", f"NodeA 超过 {NODE_A_TIMEOUT_S:.0f} 秒无上报，判为离线", node="A"))
                 await self._push_state()
@@ -301,6 +355,7 @@ class SerialDeviceService(DeviceService):
             "frames_bad": self.parser.lines_bad,
             "cal_lines": self.parser.cal_ok,
             "cfg_lines": self.parser.cfg_ok,
+            "status_lines": self.parser.status_ok,
             "bytes_dropped": self.parser.bytes_dropped,
             "last_bad_line": self.parser.last_bad_line,
         }
@@ -316,12 +371,12 @@ class SerialDeviceService(DeviceService):
             "temp_adc": s.temp_adc,
             "distance_cm": s.distance_cm,
             "distance_valid": s.distance_valid,
-            "door_state": None,
-            "security_state": None,
+            "door_state": s.door_state,
+            "security_state": s.security_state,
             "alarm_level": s.alarm_level,
             "fan_duty": s.fan_duty,
-            "window_state": None,
-            "lock_state": None,
+            "window_state": s.window_state,
+            "lock_state": s.lock_state,
             "node_a_online": s.node_a.online,
             "node_b_online": s.node_b.online,
             "node_c_online": s.node_c.online,

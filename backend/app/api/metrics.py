@@ -85,6 +85,20 @@ async def metrics(request: Request) -> Response:
     out.append(_block("link_up", "PC 与 NodeA 的串口链路", "gauge"))
     out.append(_line("link_up", 1 if s.link_connected else 0))
 
+    out.append(_block("node_polling_misses", "各节点上一秒的调度遗漏数", "gauge"))
+    for tag, node in (("A", s.node_a), ("B", s.node_b), ("C", s.node_c)):
+        if node.poll_miss is not None:
+            out.append(_line("node_polling_misses", node.poll_miss, f'{{node="{tag}"}}'))
+
+    out.append(_block("node_a_main_loops_per_second", "NodeA 每秒主循环数", "gauge"))
+    if s.main_loops is not None:
+        out.append(_line("node_a_main_loops_per_second", s.main_loops))
+
+    out.append(_block("bus_consecutive_reply_misses", "NodeA 对从站的当前连续无应答数", "gauge"))
+    for tag, value in (("B", s.master_reply_miss_b), ("C", s.master_reply_miss_c)):
+        if value is not None:
+            out.append(_line("bus_consecutive_reply_misses", value, f'{{node="{tag}"}}'))
+
     # ---- 计数器：这几个是这套系统最值得监控的可靠性指标 ----
     out.append(_block("bus_crc_errors_total", "485 总线累计 CRC 错误，由 NodeA 统计", "counter"))
     out.append(_line("bus_crc_errors_total", s.crc_errors))

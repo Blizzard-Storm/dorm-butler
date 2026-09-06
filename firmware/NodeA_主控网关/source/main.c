@@ -186,6 +186,8 @@ xdata unsigned char SlvD[2][12];
 xdata unsigned char MissCnt[2];
 xdata unsigned char CfgDirty[2];             /* 参数改过、还没成功下发给对应从站 */
 xdata unsigned char CrcErr;                  /* CRC 错误计数，饱和到 255。诊断只关心"是不是 0、涨不涨" */
+xdata unsigned int  MainLoopsPerS;            /* NodeA 每秒主循环数，饱和到 65535 */
+xdata unsigned char MainPollingMisses;        /* NodeA 调度遗漏，正常应始终为 0 */
 
 data unsigned char PollIdx;                  /* 当前在问哪个从站 0/1 */
 data unsigned char PollState;                /* 0 发请求 / 1 等应答 / 2 间隔 */
@@ -339,6 +341,15 @@ xdata unsigned char IrBuf[IR_LEN];
 #define REP_LEN  43                      /* 实际发出去的字节数，不含字符串结尾那个 NUL */
 code char RepTmpl[REP_LEN + 1] = "[00:00:00] T+000 L0 F000 D000 A0 O00 E000\r\n";
 xdata char Rep[REP_LEN];                 /* Rep 不需要 NUL：发送时长度是显式给 Uart1Print 的 */
+
+/* 详细状态/性能旁路报文，与主报文错开 600mS 发送。
+   BF/CF=节点状态位，BP/CP/AP=三节点 PollingMisses，L=NodeA 主循环数，
+   RB/RC=NodeA 当前对 B/C 的连续无应答次数。 */
+#define STA_LEN  75
+code char StaTmpl[STA_LEN + 1] =
+    "STA BF=000 BP=000 CF=000 CS=0 V=000 D=000 CP=000 AP=000 L=00000 RB=0 RC=0\r\n";
+xdata char Sta[STA_LEN];
+xdata unsigned char StatusDiv;
 #endif
 
 #if (USE_FM)
@@ -827,6 +838,18 @@ void RepN(unsigned char pos, unsigned char v, unsigned char n)
 	while(n--) { Rep[pos + n] = (char)('0' + v % 10); v /= 10; }
 }
 
+/* 大多数字段是 8 位，单独保留 16 位版给主循环数，
+   避免把所有十进制转换都升成更慢的 16 位除法。 */
+void StaC(unsigned char pos, unsigned char v, unsigned char n)
+{
+	while(n--) { Sta[pos + n] = (char)('0' + v % 10); v /= 10; }
+}
+
+void StaU(unsigned char pos, unsigned int v, unsigned char n)
+{
+	while(n--) { Sta[pos + n] = (char)('0' + v % 10); v /= 10; }
+}
+
 void SendReport()
 {
 	int v;
@@ -858,6 +881,25 @@ void SendReport()
 
 	Uart1Print(Rep, REP_LEN);
 }
+
+void SendStatus()
+{
+	if(GetUart1TxStatus() != enumUart1TxFree) return;
+
+	StaC(7,  SlvD[0][D_ENV_FLAGS],   3);
+	StaC(14, SlvD[0][D_ENV_MISS],    3);
+	StaC(21, SlvD[1][D_SEC_FLAGS],   3);
+	StaC(28, SlvD[1][D_SEC_STATE],   1);
+	StaC(32, SlvD[1][D_SEC_VIBCNT],  3);
+	StaC(38, SlvD[1][D_SEC_DOORCNT], 3);
+	StaC(45, SlvD[1][D_SEC_MISS],    3);
+	StaC(52, MainPollingMisses,       3);
+	StaU(58, MainLoopsPerS,           5);
+	StaC(67, MissCnt[0],              1);
+	StaC(72, MissCnt[1],              1);
+
+	Uart1Print(Sta, STA_LEN);
+}
 #endif
 
 
@@ -881,12 +923,24 @@ void my100mS_callback()
 	if(CfgDiv == 3) SendCfg();
 #endif
 
+#if (USE_REPORT)
+	/* 详细状态与整秒的主报文错开，避免 Uart1 发送器冲突。 */
+	if(++StatusDiv >= 10) StatusDiv = 0;
+	if(StatusDiv == 6) SendStatus();
+#endif
+
 	Refresh();
 }
 
 /* 1S：闹钟、窗帘、上位机报文、声音续播 */
 void my1S_callback()
 {
+	struct_SysPerF perf;
+
+	perf = GetSysPerformance();
+	MainLoopsPerS = (perf.MainLoops > 65535UL) ? 65535U : (unsigned int)perf.MainLoops;
+	MainPollingMisses = perf.PollingMisses;
+
 	Th = Bcd2Bin(NowTime.hour);
 	Tm = Bcd2Bin(NowTime.minute);
 	Ts = Bcd2Bin(NowTime.second);
@@ -1069,6 +1123,8 @@ void main()
 	for(i = 0; i < 12; i++) { SlvD[0][i] = 0; SlvD[1][i] = 0; }
 	MissCnt[0] = 0;  MissCnt[1] = 0;
 	CrcErr     = 0;
+	MainLoopsPerS = 0;
+	MainPollingMisses = 0;
 	AlarmFired = 0;
 	Silenced   = 0;
 	SoundMode  = 0;
@@ -1084,6 +1140,8 @@ void main()
 
 #if (USE_REPORT)
 	for(i = 0; i < REP_LEN; i++) Rep[i] = RepTmpl[i];
+	for(i = 0; i < STA_LEN; i++) Sta[i] = StaTmpl[i];
+	StatusDiv = 0;
 #endif
 
 #if (USE_FM)

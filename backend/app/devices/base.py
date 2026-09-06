@@ -148,6 +148,9 @@ class SystemState:
 
     # 诊断
     crc_errors: int = 0
+    main_loops: int | None = None
+    master_reply_miss_b: int | None = None
+    master_reply_miss_c: int | None = None
     frames_ok: int = 0
     frames_bad: int = 0
     last_frame_at: datetime | None = None
@@ -200,6 +203,9 @@ class SystemState:
             },
             "diagnostics": {
                 "crc_errors": self.crc_errors,
+                "main_loops": self.main_loops,
+                "master_reply_miss_b": self.master_reply_miss_b,
+                "master_reply_miss_c": self.master_reply_miss_c,
                 "frames_ok": self.frames_ok,
                 "frames_bad": self.frames_bad,
             },

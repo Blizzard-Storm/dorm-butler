@@ -45,7 +45,8 @@ FRONTEND_DIST = BASE_DIR.parent / "frontend" / "dist"
 def build_device() -> DeviceService:
     s = get_settings()
     if s.device_mode == "serial":
-        log.info("设备层：真实串口 %s @ %d（只读，固件暂无下行通道）", s.serial_port, s.serial_baud)
+        log.info("设备层：真实串口 %s @ %d（支持状态上报与部分参数下发）",
+                 s.serial_port, s.serial_baud)
         return SerialDeviceService(s.serial_port, s.serial_baud)
     log.info("设备层：模拟模式")
     return MockDeviceService()

@@ -26,6 +26,7 @@ export interface SystemState {
     simulated?: boolean
     frames_ok?: number
     frames_bad?: number
+    status_lines?: number
     bytes_dropped?: number
     last_bad_line?: string
     arm_countdown?: number
@@ -59,7 +60,14 @@ export interface SystemState {
     near: boolean | null
   }
   settings: { temp_threshold: number; near_threshold: number; fan_mode: string }
-  diagnostics: { crc_errors: number; frames_ok: number; frames_bad: number }
+  diagnostics: {
+    crc_errors: number
+    main_loops: number | null
+    master_reply_miss_b: number | null
+    master_reply_miss_c: number | null
+    frames_ok: number
+    frames_bad: number
+  }
   capabilities: Record<string, Capability>
 }
 

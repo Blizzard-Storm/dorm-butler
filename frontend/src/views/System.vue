@@ -103,12 +103,31 @@ onMounted(load)
           </b>
         </NDescriptionsItem>
         <NDescriptionsItem label="已解析报文行">{{ s?.diagnostics.frames_ok ?? 0 }}</NDescriptionsItem>
+        <NDescriptionsItem label="详细状态报文">{{ s?.link.status_lines ?? 0 }}</NDescriptionsItem>
         <NDescriptionsItem label="解析失败行">
           <b :class="{ bad: (s?.diagnostics.frames_bad ?? 0) > 0 }">
             {{ s?.diagnostics.frames_bad ?? 0 }}
           </b>
         </NDescriptionsItem>
         <NDescriptionsItem label="丢弃噪声字节">{{ s?.link.bytes_dropped ?? 0 }}</NDescriptionsItem>
+        <NDescriptionsItem label="NodeA 每秒主循环">
+          {{ s?.diagnostics.main_loops == null ? '未知' : s.diagnostics.main_loops }}
+        </NDescriptionsItem>
+        <NDescriptionsItem label="NodeA 调度遗漏">
+          <b :class="{ bad: (s?.nodes.A.poll_miss ?? 0) > 0 }">
+            {{ s?.nodes.A.poll_miss == null ? '未知' : s.nodes.A.poll_miss }}
+          </b>
+        </NDescriptionsItem>
+        <NDescriptionsItem label="NodeB / NodeC 调度遗漏">
+          {{ s?.nodes.B.poll_miss ?? '未知' }} / {{ s?.nodes.C.poll_miss ?? '未知' }}
+        </NDescriptionsItem>
+        <NDescriptionsItem label="485 连续无应答 B / C">
+          <b :class="{ bad: (s?.diagnostics.master_reply_miss_b ?? 0) > 0 ||
+                           (s?.diagnostics.master_reply_miss_c ?? 0) > 0 }">
+            {{ s?.diagnostics.master_reply_miss_b ?? '未知' }} /
+            {{ s?.diagnostics.master_reply_miss_c ?? '未知' }}
+          </b>
+        </NDescriptionsItem>
       </NDescriptions>
 
       <div v-if="s?.link.last_bad_line" class="badline">
@@ -116,8 +135,9 @@ onMounted(load)
         <NCode :code="s.link.last_bad_line" word-wrap />
       </div>
       <div class="tip">
-        CRC 错误长期为 0 才算总线健康。持续增长时先把三块板的 BUS_BAUD 一起降到 1200
-        重新下载，再检查 485 的 A/B 是否接反。
+        CRC 错误和调度遗漏应长期为 0，NodeA 每秒主循环应不低于 1000。
+        错误持续增长时先把三块板的 BUS_BAUD 一起降到 1200，
+        再检查 485 的 A/B 是否接反。
       </div>
     </NCard>
 
