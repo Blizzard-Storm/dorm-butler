@@ -1,28 +1,56 @@
-# 寝室管家 · 上位机
+# 寝室管家
 
-STC-B 三节点智能宿舍系统的电脑后台与手机/电脑通用网页前端。
+基于 RS485 现场总线的三节点宿舍测控系统。**单片机固件与 PC 上位机在同一个仓库里。**
 
 ```
-手机/电脑网页 ──HTTP/WebSocket──> 电脑后台 ──USB串口──> NodeA ──RS485──> NodeB / NodeC
+手机/电脑网页 ──HTTP/WebSocket──> PC 后台 ──USB串口──> NodeA ──RS485──> NodeB / NodeC
+     监督层                        网关            主站            从站
 ```
 
 电脑是网络与串口网关，NodeA 是三板系统的主控网关，手机不直接连单片机。
 
+| 目录 | 是什么 | 工具链 |
+|---|---|---|
+| `firmware/` | 三块 STC-B 板的固件 | Keil C51 + STC-ISP |
+| `backend/` | PC 网关、数据库、LLM Agent | Python 3.11 + FastAPI |
+| `frontend/` | 手机/电脑通用网页 | Vue 3 + TypeScript |
+
+固件和上位机放在一个仓库，是因为 `firmware/*/inc/protocol.h` 与
+`backend/app/protocol/frames.py` 是同一份协议的两种表达，必须同步修改；
+一次功能改动往往同时跨固件、后端、数据库、前端四层，分仓库会把它拆成两次提交。
+
 ---
 
-## ⚠️ 先读这一条：当前固件不支持远程控制
+## 三块板各干什么
 
-核对 `NodeA_主控网关/source/main.c` 的结论：
+| 节点 | 485 地址 | 职责 | 主要外设 |
+|---|---|---|---|
+| **NodeA** 主控网关 | `0x01` 主站 | 人机界面、DS1302 时钟、M24C02 参数存储、485 轮询、PC 网关 | 数码管、摇杆、DS1302、M24C02、Uart1(USB)、Uart2(485) |
+| **NodeB** 环境节点 | `0x02` 从站 | NTC 测温、光敏分档、风扇 PWM 闭环、通风窗 | 热敏 Rt、光敏 Rop、EXT(PWM)、StepMotor |
+| **NodeC** 安防节点 | `0x03` 从站 | 门磁、振动、超声波测距、布防状态机、电子锁舌 | Hall、Vib、EXT(超声波)、StepMotor、IR |
 
-- **上行有**：`SendReport()` 每秒发一行 43 字节定长文本报文
-- **下行没有**：全文件没有 `SetUart1Rxd()` 调用，也没注册 `enumEventUart1Rxd`，
-  NodeA 根本不读串口
+三块板通过 RS485 半双工总线相连（A / B / GND 三线），主站轮询、从站应答，
+自定义 ModBus 风格定长帧 + CRC16。协议定义在 `firmware/*/inc/protocol.h`，
+**三份文件内容完全一致**，任何一方改了都要同步另外两份。
 
-所以接真实硬件时（`DEVICE_MODE=serial`），本系统是**只读监控**：
-实时数据、曲线、事件、报警全都正常，但所有控制按钮会置灰并说明原因。
+## PC 与板子之间能做什么
 
-要打通控制，需按 [`docs/NodeA串口协议补充设计.md`](docs/NodeA串口协议补充设计.md)
-修改 NodeA 固件（估算增量约 180 字节，注意 Keil Eval 版 2KB 上限）。
+**上行（板子 -> PC）：全通。** NodeA 每秒发一行 43 字节定长文本报文，
+汇总三个节点的数据。
+
+**下行（PC -> 板子）：部分支持。** NodeA 收 10 字节二进制命令帧
+（`0xAA` 帧头 + CRC16），改写 `Cfg[]` 后经由已有的 485 轮询状态机下发给从站，
+从站确认后回一行 ASCII 回执。
+
+| 能做 | 不能做 | 为什么 |
+|---|---|---|
+| 温度阈值 | 风扇手动调速 | 需要 NodeA 向 NodeB 转发 `FUNC_ACT`，固件下行只做了 `FUNC_SETCFG` |
+| 布防 / 撤防 | 报警消音 | 是 NodeC 的本地动作（按 K3），没有对应的配置参数 |
+| 接近阈值 | 通风窗 | 固件根本没有这条命令，窗户只由 NodeB 本地温度闭环驱动 |
+| 闹钟时间 | | |
+| 给板子对时 | | |
+
+不能做的那几条，界面上会**置灰并说明原因**，不会假装成功。
 
 **模拟模式（`DEVICE_MODE=mock`）下所有控制功能完整可用**，
 且模拟层复刻了固件的真实控制律，接上硬件后前端不需要改。
@@ -174,7 +202,7 @@ cd backend
 ..\.venv\Scripts\python.exe -m pytest -q
 ```
 
-**52 个测试必须全过。** 挂了就先修，别推上去。
+**66 个测试必须全过。** 挂了就先修，别推上去。
 
 ### 6. 推送分支
 
@@ -279,11 +307,20 @@ git add frontend/dist
 |---|---|
 | 上位机 / 前端 | `frontend/`、`backend/app/api/` |
 | 协议 / 设备层 | `backend/app/protocol/`、`backend/app/devices/` |
-| 固件 | 另一个仓库的 Keil 工程 |
+| 固件 | `firmware/` |
 
-**唯一需要打招呼的接口**：`backend/app/protocol/frames.py` 是固件 `protocol.h`
-的 Python 镜像。谁改了 `protocol.h`，必须同步改 `frames.py` 并跑一遍 `pytest`，
-否则解析会静默出错。
+**需要打招呼的接口有两处**：
+
+1. `firmware/*/inc/protocol.h` 有三份，**内容必须完全一致**。改一份就要改三份，
+   否则联调时表现为"数据偶尔不对"，能查一整天。核对办法：
+
+   ```bash
+   md5sum firmware/*/inc/protocol.h     # 三行 md5 必须相同
+   ```
+
+2. `backend/app/protocol/frames.py` 是 `protocol.h` 的 Python 镜像。
+   改了 `protocol.h` 必须同步改它并跑一遍 `pytest`，否则解析会**静默出错**
+   —— 不报错，数据悄悄不对。
 
 ---
 
@@ -317,6 +354,102 @@ npm run dev
 | `start-frontend.cmd` | 只启前端开发服务器 |
 | `start-all.cmd` | 开发模式，前后端各开一个窗口 |
 | `build-and-serve.cmd` | 构建前端后单端口托管，演示用 |
+
+---
+
+## 固件：怎么改、怎么编译、怎么烧
+
+### 需要装什么
+
+- **Keil uVision (C51)** —— 编译固件。本机装在 `D:\KEIL`
+- **STC-ISP** —— 烧录工具，STC 官网免费下载
+
+只跑上位机的话这两个都不用装 —— `output/*.hex` 已经在仓库里了。
+
+### 编译
+
+双击 `firmware/NodeA_主控网关/NodeA.uvproj` 打开 Keil，按 **F7**。
+
+也可以命令行编译，改完不用开 IDE：
+
+```bash
+"D:\KEIL\UV4\UV4.exe" -j0 -b NodeA.uvproj -o build.log
+```
+
+看 `build.log` 里的 `Program Size` 和 `0 Error(s)`。
+
+### 烧录（三步，顺序不能错）
+
+⚠️ **串口是独占资源，后端和 STC-ISP 不能同时用。**
+
+```
+1. 双击 烧录前-释放串口.cmd     停掉后端，放开 COM 口
+2. STC-ISP 烧录                 见下
+3. 双击 start-backend.cmd       把后端起回来
+```
+
+跳过第 1 步的话，STC-ISP 会报「设备打开失败」—— 那不是驱动问题，是后端占着串口。
+
+STC-ISP 里的设置：
+
+| 项 | 值 |
+|---|---|
+| 单片机型号 | `STC15F2K60S2` |
+| 输入用户程序运行时的 IRC 频率 | **11.0592 MHz** |
+| 程序文件 | `firmware/<节点>/output/*.hex` |
+
+然后 **先点「下载/编程」，再给板子上电**（已通电就先拔 USB 再插）。
+STC 是冷启动握手，顺序反了会一直卡在「正在检测目标单片机」。
+
+⚠️ 频率选错的典型现象是**数码管全灭**，看起来像板子坏了。
+
+### 当前的功能开关
+
+`main.c` 顶部一堆 `USE_xxx` 宏，当初是为了挤进 Keil 评估版的 2KB 用户代码上限
+才关掉的。**现在用的是正式版 Keil，这个限制不存在了**，可以按需打开：
+
+| 开关 | 节点 | 状态 | 打开后 |
+|---|---|---|---|
+| `USE_PC_CMD` | A | ✅ 开 | PC 下行控制通道 |
+| `USE_REPORT` | A | ✅ 开 | 每秒上报 PC |
+| `USE_CURTAIN` | A | ❌ 关 | 光照+时间联动窗帘，**三板联动演示靠它** |
+| `USE_IRRX` | A | ❌ 关 | 收 NodeC 的红外指令（NodeC 现在发了没人收） |
+| `USE_SOUND` | A | ❌ 关 | 闹钟音乐 + 报警旋律 |
+| `USE_FM` / `USE_ENCODER` | A | ❌ 关 | FM 广播 / 旋转编码器，需借外设 |
+| `USE_PC_REPORT` | B | ✅ 开 | 单板直连 PC。**组网后要改回 0** |
+
+### 改固件时的三个坑
+
+**1. `.c` 文件是 GBK 编码，绝不要批量转 UTF-8。**
+转了之后 Keil 读中文注释会出问题，轻则乱码重则编译报错。
+仓库里的 `.gitattributes` 已经把固件源码标为二进制，Git 不会动它们的换行。
+代价是 GitHub 网页上看这些文件是乱码 —— 这是有意的取舍，clone 下来一切正常。
+
+**2. `xdata` 变量上电不会被清零。**
+Keil 的 `STARTUP.A51` 里 `XDATALEN` 默认为 0，启动代码不清 xdata 区
+（`data` 区由 `IDATALEN` 负责，是清的）。没给初值的 `xdata` 变量上电是随机值。
+
+实测踩到过：报文时间戳出现 `[55:00:04]`（不存在的小时数）、
+上报出现光照 5 档 / 报警 5 级（合法范围只有 0~4 和 0~2）。
+现在三块板都在 `main()` 里显式清零了，**新增 `xdata` 变量记得跟着加一行**。
+
+**3. 回调必须非阻塞。**
+`sys.h` 要求单遍主循环累计小于 1mS，而一次 485 往返要 40mS。
+所有耗时操作都要拆成状态机 + 定时事件推进，不能在回调里等结果。
+
+### 不用硬件也能验证协议
+
+`firmware/_主机自测/` 里有一套 gcc 环境：`prelude.h` 把 8051 的
+`code`/`xdata`/`data` 关键字和 sfr 定义打成空壳，让 gcc 能编过三个 `main.c` 查语法；
+`test.c` 跑 CRC16 已知向量、2000 组随机数据对比、单比特翻转检出、
+16 位整数往返、温度查表与浮点公式的偏差。
+
+```bash
+cd firmware/_主机自测 && bash run.sh
+```
+
+⚠️ 这个目录里的 `inc/protocol.h` 是**独立的一份拷贝**，改了主协议记得同步过来，
+否则自测跑的是旧协议、结论不可信。
 
 ---
 
@@ -354,6 +487,17 @@ NodeA 超过 5 秒无上报判离线、从站离线时旧读数作废。
 ## 项目结构
 
 ```
+firmware/                        单片机固件（Keil C51，GBK 编码）
+  NodeA_主控网关/
+    NodeA.uvproj                 Keil 工程，双击打开
+    source/main.c                主控 + 485 主站 + PC 网关
+    source/STCBSP_V3.6.LIB       课程提供的 BSP 库（老师用正式版编的）
+    inc/*.h                      BSP 头文件 + protocol.h
+    output/NodeA_Master.hex      编译产物，故意提交（不装 Keil 也能烧）
+  NodeB_环境节点/                 同上结构
+  NodeC_安防节点/                 同上结构
+  _主机自测/                      不用硬件，在 PC 上用 gcc 验证协议算法
+
 backend/
   app/
     config.py            # 环境变量配置
@@ -372,7 +516,7 @@ backend/
       tools.py agent.py  # 工具定义与 function calling
     api/
       routes.py ws.py    # REST + WebSocket
-  tests/                 # 52 个测试
+  tests/                 # 66 个测试
 frontend/
   src/
     types.ts api.ts store.ts
