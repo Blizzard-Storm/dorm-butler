@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from .crc import frame_crc_ok, frame_set_crc
+from .crc import crc16_modbus, frame_crc_ok, frame_set_crc
 
 # ---- 总线参数 ----
 BUS_BAUD = 9600
@@ -76,6 +76,59 @@ FAN_AUTO = 255           # FUNC_ACT arg0 = 255 表示交回自动
 
 # ---- 距离有效区间（NodeC main.c 的 DIST_MIN / DIST_MAX）----
 DIST_MIN, DIST_MAX = 2, 400
+
+
+# ==================================================================================
+#  PC <-> NodeA 下行通道（对应固件 NodeA main.c 的 USE_PC_CMD 段）
+# ==================================================================================
+#
+#  命令 PC -> NodeA，固定 10 字节二进制，帧头 0xAA，末两字节 CRC16/Modbus：
+#
+#      [0] 0xAA  [1] seq  [2] tgt  [3] func  [4] idx  [5] val  [6][7] 保留  [8][9] CRC
+#
+#  由 BSP 的 SetUart1Rxd（帧头匹配 + 固定长度）断帧，不经过文本行解析器。
+#  回执方向走 ASCII 行，见 protocol/report.py 的 _ACK_PATTERN。
+#
+#  两个方向框定方式不同是有意的：命令必须防单字节损坏（一个坏字节能把参数设成
+#  错值），所以带 CRC；回执要和现有的文本报文流共用同一套断帧规则，所以用 ASCII，
+#  否则回执里碰巧出现 0x0A 就会把行解析切错位。
+CMD_LEN = 10
+CMD_HDR = 0xAA
+
+# NodeA 的 Cfg[] 下标，与固件 main.c 里的 CFG_xxx 一一对应
+CFG_TEMPSET, CFG_ARM, CFG_ALMH, CFG_ALMM, CFG_NEARCM = 0, 1, 2, 3, 4
+CFG_N = 5
+
+# 回执结果码，与固件 ACK_xxx 一致
+ACK_OK = 0          # 已生效（本机参数），或从站已确认
+ACK_BADARG = 1      # 参数越界，未采纳
+ACK_OFFLINE = 2     # 目标从站离线，已缓存待其上线后下发
+ACK_NOREPLY = 3     # 从站未在超时内确认
+ACK_BADFUNC = 4     # 功能码不支持
+
+ACK_TEXT = {
+    ACK_OK: "已执行并收到确认",
+    ACK_BADARG: "参数越界，未采纳",
+    ACK_OFFLINE: "目标节点离线，参数已缓存，待其上线后自动下发",
+    ACK_NOREPLY: "从站未在超时内确认",
+    ACK_BADFUNC: "固件不支持该功能码",
+}
+
+
+def build_pc_command(seq: int, target: int, cfg_index: int, value: int,
+                     func: int = FUNC_SETCFG) -> bytes:
+    """组一帧 PC -> NodeA 的命令（含 CRC）。"""
+    buf = bytearray(CMD_LEN)
+    buf[0] = CMD_HDR
+    buf[1] = seq & 0xFF
+    buf[2] = target & 0xFF
+    buf[3] = func & 0xFF
+    buf[4] = cfg_index & 0xFF
+    buf[5] = value & 0xFF
+    crc = crc16_modbus(bytes(buf[:CMD_LEN - 2]))
+    buf[CMD_LEN - 2] = crc & 0x00FF
+    buf[CMD_LEN - 1] = (crc >> 8) & 0x00FF
+    return bytes(buf)
 
 
 def put_i16(buf: bytearray, pos: int, value: int) -> None:

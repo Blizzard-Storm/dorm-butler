@@ -659,6 +659,20 @@ void main()
 	   启动代码【不清 xdata 区】，未给初值的 xdata 变量上电是随机值。
 	   第一版漏了这一句，结果报文时间戳变成 [55:00:04] 这种垃圾小时数。 */
 	UpH = 0;  UpM = 0;  UpS = 0;  CalDiv = 0;
+
+	/* 同上：xdata 不会被启动代码清零，这几个不清会有实际后果 ——
+	   FanDuty 是随机值时 UpdateFan() 会走错分支、上电瞬间误驱动 PWM；
+	   WinOpen 随机会让通风窗的第一次动作方向反掉；
+	   RxOkCount / RxErrCount 随机会让通信页显示出根本不存在的总线错误。 */
+	FanDuty    = 0;
+	WinOpen    = 0;
+	PollMiss   = 0;
+	RxOkCount  = 0;
+	RxErrCount = 0;
+	Temp10     = 0;
+	LuxLevel   = 0;
+	RawRt      = 0;
+	RawRop     = 0;
 	Uart1Init(PC_UART1_BAUD);                /* USB 口，直连电脑上位机 */
 #endif
 

@@ -550,6 +550,22 @@ void main()
 	SetEventCallBack(enumEventVib,      myVib_callback);
 	SetEventCallBack(enumEventUart2Rxd, myUart2Rxd_callback);
 
+	/* xdata 不会被启动代码清零（Keil 的 XDATALEN 默认为 0），显式清掉。
+	   DoorOpen / Locked / VibInWindow 是随机值时，布防状态机上电第一拍
+	   就可能误判成"门开着"或"已累计多次振动"，直接触发误报警。 */
+	DoorOpen      = 0;
+	Locked        = 0;
+	NearFlag      = 0;
+	Silenced      = 0;
+	VibCount      = 0;
+	VibInWindow   = 0;
+	VibWindowTick = 0;
+	DoorCount     = 0;
+	ArmCountdown  = 0;
+	PollMiss      = 0;
+	RxOkCount     = 0;
+	RxErrCount    = 0;
+
 	MySTC_Init();
 	while(1)
 	{

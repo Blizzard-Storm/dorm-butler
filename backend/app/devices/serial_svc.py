@@ -3,16 +3,16 @@
 当前固件的硬事实（已核对 NodeA_主控网关/source/main.c）：
 
   * 上行：SendReport() 每秒发一行 43 字节定长 ASCII 报文，见 protocol/report.py
-  * 下行：**不存在**。整个 main.c 里没有 SetUart1Rxd()，也没有注册
-          enumEventUart1Rxd 回调，NodeA 根本不读串口。
+  * 下行：NodeA 固件的 USE_PC_CMD 段已实现。PC 发 10 字节二进制命令帧
+          （0xAA 帧头 + CRC16），NodeA 改 Cfg[] 并经由已有的 485 轮询状态机
+          下发给从站，从站确认后回一行 ASCII 回执 ACK s=... r=...
 
-所以本类是只读的。任何控制命令都会立刻返回 UNSUPPORTED 并说明原因，
-而不是写进串口然后假装成功 —— 把"成功写入串口"当作"设备已执行"正是
-交接文档明令禁止的行为。
+下行只覆盖 Cfg[] 里的五个参数（FUNC_SETCFG）。风扇手动调速、报警消音这类
+需要转发 FUNC_ACT 的命令固件还没做，一律如实返回 UNSUPPORTED 并说明原因，
+绝不写进串口然后假装成功 —— 把"成功写入串口"当作"设备已执行"是禁止的。
 
-要打通下行，需要按 docs/NodeA串口协议补充设计.md 修改固件；那份文档里
-的帧格式、请求编号与回执规则，本文件的 _handle_binary_frame() 已经预留
-好了对接位置。
+只有收到 result=0 的回执才标 confirmed；从站离线、未确认、参数越界
+都各有对应状态，不会被含糊成"成功"。
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from datetime import timedelta
 import serial
 from serial.tools import list_ports
 
+from ..config import get_settings
 from ..bus import TOPIC_COMMAND, TOPIC_EVENT, TOPIC_STATE, TOPIC_TELEMETRY, bus
 from ..protocol import frames as F
 from ..protocol.report import Report, ReportParser
@@ -64,21 +65,29 @@ class SerialDeviceService(DeviceService):
         self._watchdog: asyncio.Task | None = None
         self._last_report: Report | None = None
 
+        # 下行：seq 分配、在途请求、写串口互斥
+        self._seq = 0
+        self._inflight: dict[int, dict] = {}
+        self._write_lock = threading.Lock()
+
         s = self.state
         s.mode = self.mode
         s.temp_threshold = F.DEF_TEMPSET
         s.near_threshold = F.DEF_NEARCM
-        # 只读模式：全部控制能力标记为不可用，前端据此置灰
+        # NodeA 的 USE_PC_CMD 通道只覆盖 Cfg[] 里的五个参数。
+        # 没有下发通路的命令一律如实标 unsupported，前端置灰并说明原因。
         s.capabilities = {
-            name: Capability(False, NO_DOWNLINK_REASON)
-            for name in (
-                CommandName.SET_FAN,
-                CommandName.SET_TEMP_THRESHOLD,
-                CommandName.SET_SECURITY_MODE,
-                CommandName.SILENCE_ALARM,
-                CommandName.SET_NEAR_THRESHOLD,
-                CommandName.SET_WINDOW,
-            )
+            CommandName.SET_TEMP_THRESHOLD: Capability(True),
+            CommandName.SET_SECURITY_MODE: Capability(True),
+            CommandName.SET_NEAR_THRESHOLD: Capability(True),
+            CommandName.SET_FAN: Capability(
+                False, "风扇手动调速需要 NodeA 向 NodeB 转发 FUNC_ACT，"
+                       "当前固件的下行通道只支持 FUNC_SETCFG 参数下发"),
+            CommandName.SILENCE_ALARM: Capability(
+                False, "消音是 NodeC 的本地动作（按 K3），没有对应的配置参数，"
+                       "需在固件里新增 FUNC_ACT 转发后才能远程触发"),
+            CommandName.SET_WINDOW: Capability(
+                False, "固件未提供通风窗下发命令，窗户仅由 NodeB 本地温度闭环控制"),
         }
 
     # ------------------------------------------------------------------ 生命周期
@@ -119,6 +128,9 @@ class SerialDeviceService(DeviceService):
                 if chunk:
                     for report in self.parser.feed(chunk):
                         self._post(self._on_report, report)
+                    # 回执不走 feed 的返回值，单独取走交给在途请求匹配
+                    while self.parser.acks:
+                        self._post(self._on_ack, self.parser.acks.pop(0))
             except (serial.SerialException, OSError) as exc:
                 log.warning("串口读取失败，准备重连: %s", exc)
                 self._close_port()
@@ -153,7 +165,7 @@ class SerialDeviceService(DeviceService):
 
     async def _on_connect(self) -> None:
         self.state.link_connected = True
-        self.state.link_detail = {"port": self.port, "baud": self.baud, "readonly": True}
+        self.state.link_detail = {"port": self.port, "baud": self.baud}
         await bus.publish(TOPIC_EVENT, _event("link", "info", f"串口 {self.port} 已连接"))
         await self._push_state()
 
@@ -161,8 +173,7 @@ class SerialDeviceService(DeviceService):
         if self.state.link_connected:
             await bus.publish(TOPIC_EVENT, _event("link", "warning", f"串口打开失败：{err}"))
         self.state.link_connected = False
-        self.state.link_detail = {"port": self.port, "baud": self.baud,
-                                  "readonly": True, "error": err}
+        self.state.link_detail = {"port": self.port, "baud": self.baud, "error": err}
         await self._push_state()
 
     async def _on_disconnect(self, err: str) -> None:
@@ -273,8 +284,9 @@ class SerialDeviceService(DeviceService):
         self.state.link_detail = {
             "port": self.port,
             "baud": self.baud,
-            "readonly": True,
-            "readonly_reason": NO_DOWNLINK_REASON,
+            "readonly": False,
+            "inflight": len(self._inflight),
+            "acks": self.parser.ack_ok,
             "frames_ok": self.parser.lines_ok,
             "frames_bad": self.parser.lines_bad,
             "cal_lines": self.parser.cal_ok,
@@ -305,16 +317,129 @@ class SerialDeviceService(DeviceService):
             "crc_errors": s.crc_errors,
         }
 
-    # ------------------------------------------------------------------ 命令：当前一律不支持
+    # ------------------------------------------------------------------ 下行命令
+
+    async def _on_ack(self, ack) -> None:
+        """收到一条回执，匹配在途请求。
+
+        seq 对不上的一律丢弃 —— 那是上一次请求迟到的回执，
+        绝不能拿它当作这一次的结果。
+        """
+        entry = self._inflight.get(ack.seq)
+        if entry is None:
+            log.debug("丢弃无主回执 seq=%d（迟到或已超时）", ack.seq)
+            return
+        entry["ack"] = ack
+        entry["event"].set()
+
+    def _next_seq(self) -> int:
+        """1~255 循环，跳过 0（固件用 0 表示空闲）。"""
+        self._seq = self._seq % 255 + 1
+        return self._seq
+
+    def _write(self, data: bytes) -> bool:
+        ser = self._serial
+        if ser is None or not ser.is_open:
+            return False
+        try:
+            with self._write_lock:
+                ser.write(data)
+            return True
+        except (serial.SerialException, OSError) as exc:
+            log.warning("串口写入失败: %s", exc)
+            return False
 
     async def submit(self, name: str, params: dict, source: str = "user") -> Command:
-        cmd = Command(name=name, params=params, source=source, target_node="-")
-        cmd.status = CommandStatus.UNSUPPORTED
-        cmd.error = NO_DOWNLINK_REASON
-        cmd.settled_at = now()
+        target_node, plan = _plan_command(name, params)
+        cmd = Command(name=name, params=params, source=source, target_node=target_node)
         self.commands[cmd.id] = cmd
+
+        if plan is None:
+            cap = self.state.capabilities.get(name)
+            cmd.status = CommandStatus.UNSUPPORTED
+            cmd.error = cap.reason if cap else "固件不支持该命令"
+            cmd.settled_at = now()
+            await bus.publish(TOPIC_COMMAND, cmd.as_dict())
+            return cmd
+
         await bus.publish(TOPIC_COMMAND, cmd.as_dict())
+        asyncio.create_task(self._deliver(cmd, *plan))
         return cmd
+
+    async def _deliver(self, cmd: Command, cfg_index: int, value: int) -> None:
+        """下发一条命令，等回执，超时重试。
+
+        铁律：只有收到 result=0 的回执才算 confirmed。
+        写进串口成功不等于设备执行了。
+        """
+        settings = get_settings()
+        attempts = settings.command_retries + 1
+
+        for _ in range(attempts):
+            seq = self._next_seq()
+            entry = {"event": asyncio.Event(), "ack": None}
+            self._inflight[seq] = entry
+            try:
+                frame = F.build_pc_command(seq, F.ADDR_MASTER, cfg_index, value)
+                if not self._write(frame):
+                    cmd.attempts += 1
+                    await self._settle(cmd, CommandStatus.FAILED, "串口未连接，命令未发出")
+                    return
+
+                cmd.attempts += 1
+                cmd.status = CommandStatus.SENT
+                cmd.sent_at = now()
+                await bus.publish(TOPIC_COMMAND, cmd.as_dict())
+
+                try:
+                    await asyncio.wait_for(entry["event"].wait(), settings.command_timeout_s)
+                except asyncio.TimeoutError:
+                    continue                      # 这一次没回，换个 seq 重发
+            finally:
+                self._inflight.pop(seq, None)
+
+            ack = entry["ack"]
+            if ack.result == F.ACK_OK:
+                await self._settle(cmd, CommandStatus.CONFIRMED, None)
+            elif ack.result == F.ACK_OFFLINE:
+                # 参数已被 NodeA 收下并标记待下发，但从站没确认过，
+                # 不能算执行成功。前端会显示失败原因，用户知道该去看节点在线状态。
+                await self._settle(cmd, CommandStatus.FAILED,
+                                   F.ACK_TEXT[F.ACK_OFFLINE])
+            elif ack.result == F.ACK_NOREPLY:
+                await self._settle(cmd, CommandStatus.TIMEOUT, F.ACK_TEXT[F.ACK_NOREPLY])
+            else:
+                detail = f"（detail={ack.detail}）" if ack.detail else ""
+                await self._settle(cmd, CommandStatus.FAILED,
+                                   F.ACK_TEXT.get(ack.result, f"未知结果码 {ack.result}") + detail)
+            return
+
+        await self._settle(cmd, CommandStatus.TIMEOUT,
+                           f"重试 {attempts} 次仍未收到回执")
+
+    async def _settle(self, cmd: Command, status: CommandStatus, error: str | None) -> None:
+        cmd.status = status
+        cmd.error = error
+        cmd.settled_at = now()
+        await bus.publish(TOPIC_COMMAND, cmd.as_dict())
+        if status is not CommandStatus.CONFIRMED:
+            await bus.publish(TOPIC_EVENT, _event(
+                "command", "warning", f"命令 {cmd.name} 未成功：{error}"))
+
+
+def _plan_command(name: str, params: dict) -> tuple[str, tuple[int, int] | None]:
+    """把上层命令翻译成 (目标节点, (Cfg 下标, 值))。
+
+    返回 None 表示当前固件没有这条下发通路 —— 那就如实标 unsupported，
+    绝不假装成功。
+    """
+    if name == CommandName.SET_TEMP_THRESHOLD:
+        return "B", (F.CFG_TEMPSET, int(params["celsius"]))
+    if name == CommandName.SET_SECURITY_MODE:
+        return "C", (F.CFG_ARM, 1 if params.get("mode") == "arm" else 0)
+    if name == CommandName.SET_NEAR_THRESHOLD:
+        return "C", (F.CFG_NEARCM, int(params["cm"]))
+    return "-", None
 
 
 def _event(kind: str, level: str, message: str, node: str = "-") -> dict:

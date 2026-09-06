@@ -47,6 +47,13 @@ MAX_BUFFER = 4096  # 噪声保护：超过这个长度还没等到换行就丢�
 # 前端必须标注为"原始 ADC"，不得当作照度或温度这类物理量显示。
 _CAL_PATTERN = re.compile(r"^CAL RT=(?P<rt>\d{4}) ROP=(?P<rop>\d{4})$")
 
+# 下行命令的回执行（NodeA 的 USE_PC_CMD）：
+#     ACK s=012 t=01 r=00 d=000
+# s 是请求编号，PC 靠它匹配在途请求；r 是结果码，见 frames.ACK_xxx。
+_ACK_PATTERN = re.compile(
+    r"^ACK s=(?P<seq>\d{3}) t=(?P<tgt>\d{2}) r=(?P<res>\d{2}) d=(?P<detail>\d{3})$"
+)
+
 
 @dataclass
 class CalReading:
@@ -55,6 +62,18 @@ class CalReading:
     received_at: datetime
     raw_rt: int       # 热敏原始 ADC 0~1023
     raw_rop: int      # 光敏原始 ADC 0~1023
+    raw: str
+
+
+@dataclass
+class Ack:
+    """一条下行命令的回执。"""
+
+    received_at: datetime
+    seq: int
+    target: int
+    result: int
+    detail: int
     raw: str
 
 
@@ -90,9 +109,12 @@ class ReportParser:
     lines_ok: int = 0
     lines_bad: int = 0
     cal_ok: int = 0
+    ack_ok: int = 0
     bytes_dropped: int = 0
     last_bad_line: str = ""
     last_cal: CalReading | None = None
+    # 收到的回执依次放进这里，由设备层取走匹配在途请求
+    acks: list[Ack] = field(default_factory=list)
 
     def feed(self, chunk: bytes) -> Iterator[Report]:
         """喂入任意长度的串口数据，产出其中所有完整且合法的【主报文】。
@@ -118,7 +140,20 @@ class ReportParser:
     def _parse_line(self, raw_line: bytes) -> Report | None:
         text = raw_line.decode("ascii", errors="replace").rstrip("\r")
 
-        # 按首字符分流：标定行以 CAL 开头，主报文以 [ 开头
+        # 按行首分流：ACK 是下行回执，CAL 是标定数据，[ 开头是主报文
+        ack = _ACK_PATTERN.match(text)
+        if ack is not None:
+            self.ack_ok += 1
+            self.acks.append(Ack(
+                received_at=datetime.now(timezone.utc),
+                seq=int(ack.group("seq")),
+                target=int(ack.group("tgt")),
+                result=int(ack.group("res")),
+                detail=int(ack.group("detail")),
+                raw=text,
+            ))
+            return None
+
         cal = _CAL_PATTERN.match(text)
         if cal is not None:
             self.cal_ok += 1

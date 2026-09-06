@@ -4,7 +4,9 @@
   * NodeA 报文能正确落进 SystemState
   * 从站离线时旧读数被作废
   * 报文里没有的字段保持 unknown，不被编造
-  * 所有控制命令都返回 unsupported，绝不假装成功
+  * 有下发通路的命令能正确组帧，没有的如实标 unsupported
+  * 回执按 seq 匹配，迟到的回执被丢弃
+  * 从站离线的回执不会被当成执行成功
   * NodeA 超时未上报会被 watchdog 判离线
 """
 from __future__ import annotations
@@ -14,8 +16,10 @@ from datetime import timedelta
 
 import pytest
 
-from app.devices.base import CommandName, CommandStatus, now
-from app.devices.serial_svc import NODE_A_TIMEOUT_S, SerialDeviceService
+from app.devices.base import Command, CommandName, CommandStatus, now
+from app.devices.serial_svc import NODE_A_TIMEOUT_S, SerialDeviceService, _plan_command
+from app.protocol import frames as F
+from app.protocol.crc import crc16_modbus
 
 
 @pytest.fixture
@@ -93,18 +97,87 @@ def test_noise_and_partial_frames_recover(svc):
 
 
 @pytest.mark.parametrize("name", [
-    CommandName.SET_FAN,
-    CommandName.SET_TEMP_THRESHOLD,
-    CommandName.SET_SECURITY_MODE,
-    CommandName.SILENCE_ALARM,
-    CommandName.SET_WINDOW,
+    CommandName.SET_FAN,          # 需要转发 FUNC_ACT，固件下行只做了 SETCFG
+    CommandName.SILENCE_ALARM,    # NodeC 的本地动作，没有对应配置参数
+    CommandName.SET_WINDOW,       # 固件根本没有通风窗下发命令
 ])
-def test_all_commands_unsupported_in_readonly_mode(svc, name):
-    """固件没有下行通道时，绝不能把命令写进串口然后假装成功。"""
+def test_commands_without_firmware_path_are_unsupported(svc, name):
+    """固件没有这条下发通路时，如实标 unsupported，绝不写进串口然后假装成功。"""
     cmd = asyncio.run(svc.submit(name, {}))
     assert cmd.status == CommandStatus.UNSUPPORTED
-    assert cmd.error and "SetUart1Rxd" in cmd.error
+    assert cmd.error                       # 必须说明为什么不支持
     assert svc.state.capabilities[name].supported is False
+
+
+@pytest.mark.parametrize("name,params,cfg_index,value", [
+    (CommandName.SET_TEMP_THRESHOLD, {"celsius": 26}, F.CFG_TEMPSET, 26),
+    (CommandName.SET_SECURITY_MODE, {"mode": "arm"}, F.CFG_ARM, 1),
+    (CommandName.SET_SECURITY_MODE, {"mode": "disarm"}, F.CFG_ARM, 0),
+    (CommandName.SET_NEAR_THRESHOLD, {"cm": 80}, F.CFG_NEARCM, 80),
+])
+def test_supported_commands_build_correct_frame(svc, name, params, cfg_index, value):
+    """有下发通路的命令要能正确翻译成 Cfg 下标与值。"""
+    node, plan = _plan_command(name, params)
+    assert plan == (cfg_index, value)
+    assert node in ("B", "C")
+
+
+def test_command_frame_shape_and_crc():
+    frame = F.build_pc_command(seq=7, target=F.ADDR_MASTER,
+                               cfg_index=F.CFG_TEMPSET, value=26)
+    assert len(frame) == F.CMD_LEN
+    assert frame[0] == F.CMD_HDR
+    assert frame[1] == 7 and frame[3] == F.FUNC_SETCFG
+    assert frame[4] == F.CFG_TEMPSET and frame[5] == 26
+    crc = crc16_modbus(frame[:-2])
+    assert frame[-2] == crc & 0xFF and frame[-1] == crc >> 8
+
+
+def test_seq_wraps_and_never_uses_zero(svc):
+    """固件用 seq=0 表示空闲，PC 必须跳过 0。"""
+    seen = {svc._next_seq() for _ in range(600)}
+    assert 0 not in seen
+    assert seen == set(range(1, 256))
+
+
+def test_ack_line_is_parsed_and_not_mistaken_for_report(svc):
+    reports = list(svc.parser.feed(b"ACK s=012 t=01 r=00 d=000\r\n"))
+    assert reports == []                    # 回执不是主报文
+    assert svc.parser.lines_bad == 0        # 也不是坏行
+    assert len(svc.parser.acks) == 1
+    a = svc.parser.acks[0]
+    assert (a.seq, a.target, a.result, a.detail) == (12, 1, 0, 0)
+
+
+def test_ack_confirms_only_matching_seq(svc):
+    """迟到的回执不能被当成当前请求的结果。"""
+    async def scenario():
+        ev = asyncio.Event()
+        svc._inflight[5] = {"event": ev, "ack": None}
+        # 一条 seq 对不上的回执：必须被丢弃，不能唤醒在途请求
+        list(svc.parser.feed(b"ACK s=099 t=01 r=00 d=000\r\n"))
+        await svc._on_ack(svc.parser.acks.pop(0))
+        assert not ev.is_set()
+        # seq 对得上的才算数
+        list(svc.parser.feed(b"ACK s=005 t=01 r=00 d=000\r\n"))
+        await svc._on_ack(svc.parser.acks.pop(0))
+        assert ev.is_set()
+        assert svc._inflight[5]["ack"].result == F.ACK_OK
+
+    asyncio.run(scenario())
+
+
+def test_offline_ack_is_not_reported_as_success(svc):
+    """从站离线时 NodeA 会收下参数并回 ACK_OFFLINE，但那不是执行成功。"""
+    async def scenario():
+        cmd = Command(name=CommandName.SET_TEMP_THRESHOLD, params={"celsius": 26})
+        svc.commands[cmd.id] = cmd
+        await svc._settle(cmd, CommandStatus.FAILED, F.ACK_TEXT[F.ACK_OFFLINE])
+        return cmd
+
+    cmd = asyncio.run(scenario())
+    assert cmd.status is not CommandStatus.CONFIRMED
+    assert "离线" in cmd.error
 
 
 def test_watchdog_marks_node_a_offline(svc):

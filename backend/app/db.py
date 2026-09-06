@@ -12,7 +12,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .bus import TOPIC_COMMAND, TOPIC_EVENT, TOPIC_TELEMETRY, bus
 from .config import get_settings
+from .devices.base import CommandName, CommandStatus
 from .models import Base, CommandRecord, Event, Setting, Telemetry
+
+# 哪些命令确认成功后需要把参数持久化下来
+_SETTING_OF_COMMAND = {
+    str(CommandName.SET_TEMP_THRESHOLD): "temp_threshold",
+    str(CommandName.SET_NEAR_THRESHOLD): "near_threshold",
+}
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +171,19 @@ class Recorder:
             row.settled_at = _parse_ts(p["settled_at"]) if p.get("settled_at") else None
             row.attempts = int(p.get("attempts") or 0)
             row.error = p.get("error")
+
+        # 只有设备确认执行了，这个参数才配被记成"当前值"。
+        # 失败、超时、离线待下发的命令一律不存盘 —— 否则页面上的"当前阈值"
+        # 会变成"上一次请求的值"，那是在骗人。
+        # REST 和 AI 两条下发路径都经过这里，行为一致。
+        if p.get("status") == str(CommandStatus.CONFIRMED):
+            key = _SETTING_OF_COMMAND.get(p.get("name", ""))
+            if key:
+                params = p.get("params") or {}
+                for v in params.values():
+                    if isinstance(v, int):
+                        set_setting(key, str(v))
+                        break
 
 
 def purge_old_telemetry() -> int:

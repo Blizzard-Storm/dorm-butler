@@ -145,3 +145,54 @@ def test_websocket_pushes_state(client):
         first = ws.receive_json()
         assert first["topic"] == "state"
         assert "env" in first["payload"]
+
+
+def test_failed_command_does_not_persist_setting(client):
+    """失败的命令绝不能把请求值记成"当前值"。
+
+    这是实测踩到的坑：原来 REST 路由在提交【之前】就存盘，结果一条
+    因从站离线而失败的命令，照样把 24℃ 写进了 settings，页面上
+    "当前阈值"于是显示成用户请求过、但设备从没接受过的值。
+    """
+    import time
+
+    from app.db import get_setting, set_setting
+    from app.devices.base import CommandName, CommandStatus
+    from app.db import recorder
+
+    set_setting("temp_threshold", "28")
+
+    # 直接喂一条失败的命令记录给记录器
+    recorder._on_event("command", {
+        "id": "failtest01", "name": str(CommandName.SET_TEMP_THRESHOLD),
+        "params": {"celsius": 35}, "target_node": "B", "source": "user",
+        "status": str(CommandStatus.FAILED), "created_at": None,
+        "sent_at": None, "settled_at": None, "attempts": 1,
+        "error": "目标节点离线",
+    })
+    assert get_setting("temp_threshold") == "28"      # 没被 35 覆盖
+
+    # 确认成功的才写进去
+    recorder._on_event("command", {
+        "id": "oktest01", "name": str(CommandName.SET_TEMP_THRESHOLD),
+        "params": {"celsius": 35}, "target_node": "B", "source": "user",
+        "status": str(CommandStatus.CONFIRMED), "created_at": None,
+        "sent_at": None, "settled_at": None, "attempts": 1, "error": None,
+    })
+    assert get_setting("temp_threshold") == "35"
+
+
+def test_ai_command_persists_through_same_path(client):
+    """AI 下发的命令走的是同一条持久化路径，行为必须与手动一致。"""
+    from app.db import get_setting, set_setting
+    from app.devices.base import CommandName, CommandStatus
+    from app.db import recorder
+
+    set_setting("near_threshold", "60")
+    recorder._on_event("command", {
+        "id": "aitest01", "name": str(CommandName.SET_NEAR_THRESHOLD),
+        "params": {"cm": 90}, "target_node": "C", "source": "ai",
+        "status": str(CommandStatus.CONFIRMED), "created_at": None,
+        "sent_at": None, "settled_at": None, "attempts": 1, "error": None,
+    })
+    assert get_setting("near_threshold") == "90"

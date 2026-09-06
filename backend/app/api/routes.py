@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from ..config import get_settings
-from ..db import all_settings, session_scope, set_setting
+from ..db import all_settings, session_scope
 from ..devices.base import CommandName
 from ..devices.mock import MockDeviceService
 from ..devices.serial_svc import list_serial_ports
@@ -202,13 +202,13 @@ async def control_fan(body: FanBody, request: Request):
 
 @router.post("/control/temperature-threshold")
 async def control_threshold(body: ThresholdBody, request: Request):
-    set_setting("temp_threshold", str(body.celsius))
+    # 不在这里存盘。参数只有在设备确认执行后才算数，
+    # 持久化统一由 db.Recorder 在命令进入 confirmed 时做（AI 下发的命令同理）。
     return await _submit(request, CommandName.SET_TEMP_THRESHOLD, {"celsius": body.celsius})
 
 
 @router.post("/control/near-threshold")
 async def control_near(body: NearBody, request: Request):
-    set_setting("near_threshold", str(body.cm))
     return await _submit(request, CommandName.SET_NEAR_THRESHOLD, {"cm": body.cm})
 
 

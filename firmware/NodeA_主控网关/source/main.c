@@ -71,6 +71,7 @@
  *
  *   如果能换成正式授权的 Keil，把四个全打开就行——这些开关只是为了迁就 2KB 上限。
  *================================================================================================*/
+#define USE_PC_CMD          1           /* PC 下行控制通道，约 200 字节。见文件末尾第十四节 */
 #define USE_REPORT          1           /* 上位机文本报文  实测约 360 字节（含模板和 RepN） */
 #define USE_IRRX            0           /* 收节点C 的红外指令  约  90 字节 */
 #define USE_SOUND           0           /* 闹钟音乐 + 报警旋律  约 130 字节。关掉退化成蜂鸣器短鸣，
@@ -193,6 +194,79 @@ data unsigned char RspReady;                 /* 接收回调置位，主状态机取用 */
 data unsigned char OnlineMask;               /* bit0 = ENV 在线, bit1 = SEC 在线 */
 
 code unsigned char SlaveAddr[2] = {ADDR_ENV, ADDR_SEC};
+
+#if (USE_PC_CMD)
+/*----------------------------------------------------------------------------------
+ * PC 下行命令通道
+ *
+ *   之前 PC 只能看不能动：本文件里从来没有调用过 SetUart1Rxd()，NodeA 根本不读串口。
+ *   而 485 那一侧其实早就通了 —— NodeB/NodeC 一直支持 FUNC_SETCFG，
+ *   本机的 Cfg[] + CfgDirty[] + SendReq() 也一直在把配置下发给它们（按 Key2 切布防走的就是这条路）。
+ *   缺的只是"让 PC 也能触发这条路"。
+ *
+ *   命令帧 PC -> NodeA，固定 10 字节：
+ *       [0] 0xAA  帧头，交给 SetUart1Rxd 做包头匹配
+ *       [1] seq   请求编号 1~255，0 保留。PC 靠它匹配回执，迟到的回包会被丢弃
+ *       [2] tgt   目标标识，原样回填，本机不解释
+ *       [3] func  功能码，复用 protocol.h 的 FUNC_SETCFG
+ *       [4] idx   参数序号 0~4，与本机 Cfg[] 下标一致
+ *       [5] val   参数值
+ *       [6] [7]   保留
+ *       [8] [9]   CRC16/Modbus，低字节在前
+ *
+ *   回执 NodeA -> PC，固定 27 字节的 ASCII 行：
+ *
+ *       ACK s=012 t=01 r=00 d=000\r\n
+ *
+ *       s = 原样回填的 seq，PC 靠它匹配请求，迟到的回执会被丢弃
+ *       t = 原样回填的目标标识
+ *       r = 结果码，见下面 ACK_xxx
+ *       d = 失败时的补充信息（越界的值、不认识的功能码），成功填 0
+ *
+ *   回执为什么用 ASCII 而不是二进制：
+ *   上行本来就是按换行断帧的文本流（每秒一条 43 字节报文），
+ *   往里混一个二进制帧，只要帧内某个字节碰巧是 0x0A，PC 的行解析就会错位。
+ *   ASCII 行与现有报文共用同一套断帧规则，且在串口助手里肉眼可读。
+ *   回执不带 CRC：格式不合就正则匹配失败，PC 超时重发整条命令即可；
+ *   而命令方向必须带 CRC —— 一个坏字节可能把参数设成错值。
+ *
+ *   为什么参数用 Cfg[] 下标而不是各自的语义码：
+ *   五个参数的取值范围、步进、该通知哪个从站，CfgTab[][] 里已经有一份完整的表，
+ *   按下标走就能直接复用它做校验和路由，不用在这里再写一遍五分支判断。
+ *
+ *   ！！回调里绝不能等 485 应答。sys.H 要求单遍主循环累计小于 1mS，
+ *   而一次 485 往返要 40mS。所以回调只做三件事：验 CRC、改 Cfg[]、置 CfgDirty[]，
+ *   真正的下发交给已有的 my10mS_callback() 轮询状态机，
+ *   回执等 HandleRsp() 收到从站确认后再补发。
+ *---------------------------------------------------------------------------------*/
+#define CMD_LEN             10
+#define ACK_LEN             27
+#define CMD_HDR             0xAA
+
+#define ACK_OK              0x00        /* 已生效（本机参数），或从站已确认 */
+#define ACK_BADARG          0x01        /* 参数越界，未采纳 */
+#define ACK_OFFLINE         0x02        /* 目标从站离线，已缓存待其上线后下发 */
+#define ACK_NOREPLY         0x03        /* 从站未在超时内确认 */
+#define ACK_BADFUNC         0x04        /* 功能码不支持 */
+
+/* 等从站确认的超时，单位 10mS。轮询一圈约 180mS，给 8 圈余量 */
+#define ACK_WAIT_TICKS      150
+
+code unsigned char PcHdr[1] = {CMD_HDR};
+
+/* 回执模板，发送时只改中间那几位数字，不重新拼字符串
+       A  C  K     s  =  0  1  2     t  =  0  1     r  =  0  0     d  =  0  0  0  CR LF
+       0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
+                            seq 6~8        tgt 12,13     r 17,18       detail 22~24   */
+code char AckTmpl[ACK_LEN + 1] = "ACK s=000 t=00 r=00 d=000\r\n";
+
+xdata unsigned char CmdBuf[CMD_LEN];
+xdata char AckBuf[ACK_LEN];
+xdata unsigned char PcSeq;                   /* 待回执的请求编号，0 = 空闲 */
+xdata unsigned char PcTgt;                   /* 回执里原样回填的目标标识 */
+xdata unsigned char PcSlave;                 /* 在等哪个从站确认 0=ENV 1=SEC */
+xdata unsigned char PcWait;                  /* 等待倒计时，0 = 没在等 */
+#endif
 
 xdata struct_DS1302_RTC NowTime;
 /* 上电默认时间：2026年9月1日 星期二 21:30:00（BCD 码）
@@ -391,6 +465,78 @@ void SendReq(unsigned char idx)
 	Uart2Print(ReqBuf, REQ_LEN);
 }
 
+#if (USE_PC_CMD)
+/*----------------------------------------------------------------------------------
+ * 发一条回执。不论发送成功与否都清空等待状态：
+ * 串口忙时这一条会丢，PC 那边 3 秒超时后会重发整条命令，状态机不该卡在这里。
+ *---------------------------------------------------------------------------------*/
+void AckN(unsigned char pos, unsigned char v, unsigned char n)
+{
+	while(n--) { AckBuf[pos + n] = (char)('0' + v % 10); v /= 10; }
+}
+
+void SendAck(unsigned char result, unsigned char detail)
+{
+	if(GetUart1TxStatus() == enumUart1TxFree)
+	{
+		AckN(6,  PcSeq,  3);
+		AckN(12, PcTgt,  2);
+		AckN(17, result, 2);
+		AckN(22, detail, 3);
+		Uart1Print(AckBuf, ACK_LEN);
+	}
+	PcSeq  = 0;
+	PcWait = 0;
+}
+
+/*----------------------------------------------------------------------------------
+ * 收到 PC 一条命令。校验、改参数、置下发标志，然后立刻返回。
+ *---------------------------------------------------------------------------------*/
+void myUart1Rxd_callback()
+{
+	unsigned int  crc;
+	unsigned char i, v, who;
+
+	crc = Crc16Modbus(CmdBuf, CMD_LEN - 2);
+	if(CmdBuf[CMD_LEN - 2] != (unsigned char)(crc & 0x00FF)) return;   /* 坏帧静默丢弃 */
+	if(CmdBuf[CMD_LEN - 1] != (unsigned char)(crc >> 8))     return;   /* 让 PC 超时重试 */
+
+	if(CmdBuf[1] == 0) return;                       /* seq 0 保留，不是合法请求 */
+
+	PcSeq = CmdBuf[1];
+	PcTgt = CmdBuf[2];
+
+	if(CmdBuf[3] != FUNC_SETCFG) { SendAck(ACK_BADFUNC, CmdBuf[3]); return; }
+
+	i = CmdBuf[4];
+	v = CmdBuf[5];
+
+	/* 值域校验查 CfgTab，与摇杆改值走的是同一张表，两个入口不会出现不同的限幅 */
+	if(i >= CFG_N)                                       { SendAck(ACK_BADARG, i); return; }
+	if(v < CfgTab[i][CFG_MIN] || v > CfgTab[i][CFG_MAX])  { SendAck(ACK_BADARG, v); return; }
+
+	Cfg[i] = v;
+	SetBeep(3000, 5);                                /* 收到远程命令"嘀"一声，现场能听见 */
+
+	who = CfgTab[i][CFG_WHO];
+	if(who >= 2) { SendAck(ACK_OK, 0); return; }     /* 本机参数（闹钟），当场生效 */
+
+	CfgDirty[who] = 1;                               /* 交给轮询状态机下发 */
+
+	if(!(OnlineMask & (unsigned char)(1 << who)))
+	{
+		/* 从站不在线。参数已经存下且标了 dirty，等它上线会自动补发，
+		   但现在不能说"已执行"，如实回"离线待下发"。 */
+		SendAck(ACK_OFFLINE, 0);
+		return;
+	}
+
+	PcSlave = who;
+	PcWait  = ACK_WAIT_TICKS;                        /* 等 HandleRsp 里从站确认 */
+}
+#endif
+
+
 /* 解析一帧应答。CRC 已经在接收回调里验过了。
    这里不逐字段拆包，整块 12 字节存进 SlvD[idx][]，谁要用谁按下标取。 */
 void HandleRsp()
@@ -411,6 +557,12 @@ void HandleRsp()
 	MissCnt[idx] = 0;
 	OnlineMask  |= (unsigned char)(1 << idx);
 	if(RspBuf[F_FUNC] == FUNC_SETCFG) CfgDirty[idx] = 0;   /* 从站确认收到配置了 */
+
+#if (USE_PC_CMD)
+	/* PC 在等这个从站的确认，现在拿到了，补发回执。
+	   只有走到这里才算真正执行成功 —— 写进串口不等于设备执行了。 */
+	if(PcWait && idx == PcSlave && RspBuf[F_FUNC] == FUNC_SETCFG) SendAck(ACK_OK, 0);
+#endif
 
 	if(idx == 1)
 	{
@@ -481,6 +633,15 @@ void my10mS_callback()
 		}
 		break;
 	}
+
+#if (USE_PC_CMD)
+	/* 从站迟迟不确认就回超时，别让 PC 一直悬着 */
+	if(PcWait)
+	{
+		PcWait--;
+		if(PcWait == 0) SendAck(ACK_NOREPLY, 0);
+	}
+#endif
 
 	if(SaveStep) CfgSaveStep();                      /* 参数保存：一次 10mS 写一个字节 */
 }
@@ -813,6 +974,23 @@ void main()
 	DS1302Init(InitTime);                    /* 只有 DS1302 检测到掉电时才会用 InitTime 校时 */
 	NowTime = RTC_Read();
 
+	/*==== xdata 清零 ====================================================
+	   Keil 默认的 STARTUP.A51 里 XDATALEN 为 0，启动代码【不清 xdata 区】，
+	   没给初值的 xdata 变量上电就是随机数。（data 区由 IDATALEN 负责，是清的。）
+
+	   实测踩到的坑：SlvD 未清零时，从站还没应答过，NodeA 就把随机值当成
+	   从站数据发上串口，出现过 "L5 A5" 这种光照 5 档、报警等级 5 的
+	   非法读数 —— 而合法范围分别只有 0~4 和 0~2。
+
+	   根治办法是把 STARTUP.A51 加进工程并设 XDATALEN 为 0x0800，
+	   那要改 .uvproj 且三块板都得动，需与组长确认；在那之前先在这里显式清。 */
+	for(i = 0; i < 12; i++) { SlvD[0][i] = 0; SlvD[1][i] = 0; }
+	MissCnt[0] = 0;  MissCnt[1] = 0;
+	CrcErr     = 0;
+	AlarmFired = 0;
+	Silenced   = 0;
+	SoundMode  = 0;
+
 	for(i = 0; i < CFG_N; i++) Cfg[i] = CfgTab[i][CFG_DEF];
 	CfgLoad();                               /* 读参数。放在 MySTC_Init 之前，此时调度器还没跑，
 	                                            连着读 7 个字节不受 1mS 约束限制 */
@@ -834,6 +1012,17 @@ void main()
 #endif
 
 	Uart1Init(UART1_BAUD);                   /* USB 口，接电脑串口调试助手 */
+
+#if (USE_PC_CMD)
+	/* xdata 区在 Keil 默认的 STARTUP.A51 下不会被清零（XDATALEN 为 0），
+	   没给初值的变量上电是随机数，这里必须显式清。 */
+	PcSeq = 0;  PcWait = 0;  PcTgt = 0;  PcSlave = 0;
+	{
+		unsigned char k;
+		for(k = 0; k < ACK_LEN; k++) AckBuf[k] = AckTmpl[k];
+	}
+	SetUart1Rxd(CmdBuf, CMD_LEN, PcHdr, 1);  /* 按 0xAA 帧头 + 固定 10 字节断帧 */
+#endif
 
 #if (BUS_USE_MODBUS)
 	Uart2Init(BUS_BAUD, Uart2Usedfor485ModBus);
@@ -857,6 +1046,9 @@ void main()
 	SetEventCallBack(enumEventIrRxd,    myIrRxd_callback);
 #endif
 	SetEventCallBack(enumEventUart2Rxd, myUart2Rxd_callback);
+#if (USE_PC_CMD)
+	SetEventCallBack(enumEventUart1Rxd, myUart1Rxd_callback);
+#endif
 
 	MySTC_Init();
 	while(1)
