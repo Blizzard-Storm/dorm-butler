@@ -186,7 +186,7 @@ class SecurityBody(BaseModel):
 
 
 class WindowBody(BaseModel):
-    state: Literal["open", "close"]
+    state: Literal["open", "close", "auto"]
 
 
 async def _submit(request: Request, name: str, params: dict):
@@ -248,7 +248,6 @@ async def control_silence(request: Request):
 
 @router.post("/control/window")
 async def control_window(body: WindowBody, request: Request):
-    """固件当前不支持，这里照样走同一条链路，让前端拿到 unsupported 状态。"""
     return await _submit(request, CommandName.SET_WINDOW, {"state": body.state})
 
 

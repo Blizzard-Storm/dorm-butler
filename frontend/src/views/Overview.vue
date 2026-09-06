@@ -22,7 +22,7 @@ const alarmText=computed(()=>s.value?.security.alarm_level==null?'未知':['无�
 <div class="grid">
 <StatCard label="室内温度" :value="s.env.temp_c" unit="℃" :icon="Thermometer" :tone="tempTone" :note="s.env.temp_saturated?'读数达到固件上限':s.link.mode==='serial'?'环境节点 · 温度采样':'自动控制阈值 '+s.settings.temp_threshold+'℃'"/>
 <StatCard label="光照等级" :value="s.env.lux_level===null?null:luxText(s.env.lux_level)" :icon="Sun" note="0–4 档 · 未进行照度标定"/>
-<StatCard label="风扇 PWM" :value="s.env.fan_duty" unit="%" :icon="Fan" :note="s.link.mode==='serial'?'输出占空比 · 运行模式未知':(s.env.fan_mode==='manual'?'手动模式':'自动模式')+' · 非实测转速'"/>
+<StatCard label="风扇 PWM" :value="s.env.fan_duty" unit="%" :icon="Fan" :note="(s.env.fan_mode==='manual'?'手动模式':'自动模式')+' · 输出占空比，非实测转速'"/>
 <StatCard label="门口距离" :value="s.security.distance_cm" unit="cm" :digits="0" :icon="Ruler" :tone="s.security.near?'warn':'normal'" :note="s.security.distance_valid?'超声波有效读数':'暂无有效回波'"/>
 </div>
 <div class="dashboard-columns">

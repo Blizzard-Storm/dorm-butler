@@ -73,10 +73,10 @@
  *================================================================================================*/
 #define USE_PC_CMD          1           /* PC 下行控制通道，约 200 字节。见文件末尾第十四节 */
 #define USE_REPORT          1           /* 上位机文本报文  实测约 360 字节（含模板和 RepN） */
-#define USE_IRRX            0           /* 收节点C 的红外指令  约  90 字节 */
+#define USE_IRRX            1           /* 收节点C 的红外指令  约  90 字节 */
 #define USE_SOUND           0           /* 闹钟音乐 + 报警旋律  约 130 字节。关掉退化成蜂鸣器短鸣，
                                            节点C 那边照样会响警笛，所以这是最先该关的一个 */
-#define USE_CURTAIN         0           /* 光照 + 时间联动窗帘  约 120 字节 */
+#define USE_CURTAIN         1           /* 光照 + 时间联动窗帘  约 120 字节 */
 #define USE_FM              0           /* 闹钟到点开 FM 广播   约  60 字节，另需插耳机 */
 #define USE_ENCODER         0           /* EXT 接旋转编码器     约  50 字节，借到件再开 */
 
@@ -212,10 +212,13 @@ code unsigned char SlaveAddr[2] = {ADDR_ENV, ADDR_SEC};
  *       [2] tgt   目标标识，原样回填，本机不解释
  *       [3] func  功能码：
  *                   FUNC_SETCFG (0x10)  改 Cfg[] 参数，见下面 idx/val
+ *                   FUNC_ACT    (0x06)  转发执行器动作，见下面 slave/action
  *                   FUNC_PC_SETTIME     PC 给板子对时，见下面 时/分/秒
  *       [4] idx   FUNC_SETCFG 时是参数序号 0~4（与本机 Cfg[] 下标一致）
+ *                 FUNC_ACT 时是从站序号：0=NodeB，1=NodeC
  *                 FUNC_PC_SETTIME 时是【时】0~23
  *       [5] val   FUNC_SETCFG 时是参数值
+ *                 FUNC_ACT 时是 protocol.h 中约定的动作值
  *                 FUNC_PC_SETTIME 时是【分】0~59
  *       [6]       FUNC_PC_SETTIME 时是【秒】0~59，其余功能保留
  *       [7]       保留
@@ -235,14 +238,14 @@ code unsigned char SlaveAddr[2] = {ADDR_ENV, ADDR_SEC};
  *   往里混一个二进制帧，只要帧内某个字节碰巧是 0x0A，PC 的行解析就会错位。
  *   ASCII 行与现有报文共用同一套断帧规则，且在串口助手里肉眼可读。
  *   回执不带 CRC：格式不合就正则匹配失败，PC 超时重发整条命令即可；
- *   而命令方向必须带 CRC —— 一个坏字节可能把参数设成错值。
+ *   而命令方向必须带 CRC —— 一个坏字节可能把参数或执行器设成错值。
  *
  *   为什么参数用 Cfg[] 下标而不是各自的语义码：
  *   五个参数的取值范围、步进、该通知哪个从站，CfgTab[][] 里已经有一份完整的表，
  *   按下标走就能直接复用它做校验和路由，不用在这里再写一遍五分支判断。
  *
  *   ！！回调里绝不能等 485 应答。sys.H 要求单遍主循环累计小于 1mS，
- *   而一次 485 往返要 40mS。所以回调只做三件事：验 CRC、改 Cfg[]、置 CfgDirty[]，
+ *   而一次 485 往返要 40mS。所以回调只做校验和挂起配置/动作，
  *   真正的下发交给已有的 my10mS_callback() 轮询状态机，
  *   回执等 HandleRsp() 收到从站确认后再补发。
  *---------------------------------------------------------------------------------*/
@@ -299,6 +302,8 @@ xdata unsigned char PcSeq;                   /* 待回执的请求编号，0 = 空闲 */
 xdata unsigned char PcTgt;                   /* 回执里原样回填的目标标识 */
 xdata unsigned char PcSlave;                 /* 在等哪个从站确认 0=ENV 1=SEC */
 xdata unsigned char PcWait;                  /* 等待倒计时，0 = 没在等 */
+xdata unsigned char ActPending;              /* 等待转发的一次性 FUNC_ACT */
+xdata unsigned char ActValue;
 #endif
 
 xdata struct_DS1302_RTC NowTime;
@@ -483,7 +488,12 @@ void SendReq(unsigned char idx)
 	ReqBuf[REQ_ARG2] = 0;
 	ReqBuf[REQ_ARG3] = 0;
 
-	if(CfgDirty[idx])
+	if(ActPending && idx == PcSlave)
+	{
+		ReqBuf[F_FUNC] = FUNC_ACT;
+		ReqBuf[REQ_ARG0] = ActValue;
+	}
+	else if(CfgDirty[idx])
 	{
 		ReqBuf[F_FUNC] = FUNC_SETCFG;
 		if(idx == 0)
@@ -526,6 +536,7 @@ void SendAck(unsigned char result, unsigned char detail)
 	AckPending = 1;              /* 由 10mS 回调择机发出，不在这里因为串口忙就丢掉 */
 	PcSeq  = 0;
 	PcWait = 0;
+	ActPending = 0;
 }
 
 /* 本机参数回报，30 字节 */
@@ -585,6 +596,30 @@ void myUart1Rxd_callback()
 		return;
 	}
 
+	if(CmdBuf[3] == FUNC_ACT)
+	{
+		who = CmdBuf[4];
+		v   = CmdBuf[5];
+		if(who >= 2) { SendAck(ACK_BADARG, who); return; }
+		if(who == 0)
+		{
+			if(v > 100 && v < ACT_ENV_WIN_CLOSE) { SendAck(ACK_BADARG, v); return; }
+		}
+		else if(v > ACT_SEC_SILENCE) { SendAck(ACK_BADARG, v); return; }
+
+		if(!(OnlineMask & (unsigned char)(1 << who)))
+		{
+			SendAck(ACK_OFFLINE, 0);
+			return;
+		}
+
+		PcSlave    = who;
+		ActValue   = v;
+		ActPending = 1;
+		PcWait     = ACK_WAIT_TICKS;
+		return;
+	}
+
 	if(CmdBuf[3] != FUNC_SETCFG) { SendAck(ACK_BADFUNC, CmdBuf[3]); return; }
 
 	i = CmdBuf[4];
@@ -640,7 +675,8 @@ void HandleRsp()
 #if (USE_PC_CMD)
 	/* PC 在等这个从站的确认，现在拿到了，补发回执。
 	   只有走到这里才算真正执行成功 —— 写进串口不等于设备执行了。 */
-	if(PcWait && idx == PcSlave && RspBuf[F_FUNC] == FUNC_SETCFG) SendAck(ACK_OK, 0);
+	if(PcWait && idx == PcSlave &&
+	   (RspBuf[F_FUNC] == FUNC_SETCFG || RspBuf[F_FUNC] == FUNC_ACT)) SendAck(ACK_OK, 0);
 #endif
 
 	if(idx == 1)
@@ -1157,6 +1193,7 @@ void main()
 	/* xdata 区在 Keil 默认的 STARTUP.A51 下不会被清零（XDATALEN 为 0），
 	   没给初值的变量上电是随机数，这里必须显式清。 */
 	PcSeq = 0;  PcWait = 0;  PcTgt = 0;  PcSlave = 0;
+	ActPending = 0;  ActValue = 0;
 	AckPending = 0;  CfgDiv = 0;
 	{
 		unsigned char k;

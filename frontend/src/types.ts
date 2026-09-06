@@ -47,6 +47,7 @@ export interface SystemState {
     fan_duty: number | null
     fan_mode: 'auto' | 'manual'
     window_state: string | null
+    window_mode: 'auto' | 'manual' | null
   }
   security: {
     distance_cm: number | null
@@ -58,6 +59,7 @@ export interface SystemState {
     vib_count: number | null
     door_count: number | null
     near: boolean | null
+    silenced: boolean | null
   }
   settings: { temp_threshold: number; near_threshold: number; fan_mode: string }
   diagnostics: {

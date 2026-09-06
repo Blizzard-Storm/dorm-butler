@@ -44,6 +44,8 @@ ENVF_FAN_ON = 0x01
 ENVF_WIN_OPEN = 0x02
 ENVF_TEMP_HI = 0x04
 ENVF_LUX_LOW = 0x08
+ENVF_FAN_MANUAL = 0x10
+ENVF_WIN_MANUAL = 0x20
 
 # ---- 节点C 安防 数据区偏移 ----
 D_SEC_TYPE, D_SEC_FLAGS = 0, 1
@@ -57,6 +59,7 @@ SECF_DOOR_OPEN = 0x02
 SECF_VIB = 0x04
 SECF_NEAR = 0x08
 SECF_LOCKED = 0x10
+SECF_SILENCED = 0x20
 
 SECST_DISARMED, SECST_ARMING, SECST_ARMED, SECST_ALARM = 0, 1, 2, 3
 SECST_NAMES = {0: "disarmed", 1: "arming", 2: "armed", 3: "alarm"}
@@ -73,6 +76,13 @@ TEMPSET_MIN, TEMPSET_MAX = 10, 40
 NEARCM_MIN, NEARCM_MAX = 10, 200
 FAN_DUTY_MIN, FAN_DUTY_MAX = 0, 100
 FAN_AUTO = 255           # FUNC_ACT arg0 = 255 表示交回自动
+ACT_ENV_WIN_CLOSE = 252
+ACT_ENV_WIN_OPEN = 253
+ACT_ENV_WIN_AUTO = 254
+ACT_ENV_FAN_AUTO = 255
+ACT_SEC_UNLOCK = 0
+ACT_SEC_LOCK = 1
+ACT_SEC_SILENCE = 2
 
 # ---- 距离有效区间（NodeC main.c 的 DIST_MIN / DIST_MAX）----
 DIST_MIN, DIST_MAX = 2, 400
@@ -126,6 +136,7 @@ def build_pc_command(seq: int, target: int, arg0: int = 0, arg1: int = 0,
 
     参数含义随功能码变化：
         FUNC_SETCFG      arg0=Cfg 下标, arg1=值
+        FUNC_ACT         arg0=从站序号(0=B, 1=C), arg1=动作值
         FUNC_PC_SETTIME  arg0=时, arg1=分, arg2=秒
     """
     buf = bytearray(CMD_LEN)
@@ -191,6 +202,8 @@ def decode_env(data: bytes) -> dict:
         "window_open": bool(flags & ENVF_WIN_OPEN),
         "temp_high": bool(flags & ENVF_TEMP_HI),
         "lux_low": bool(flags & ENVF_LUX_LOW),
+        "fan_manual": bool(flags & ENVF_FAN_MANUAL),
+        "window_manual": bool(flags & ENVF_WIN_MANUAL),
     }
 
 
@@ -212,4 +225,5 @@ def decode_sec(data: bytes) -> dict:
         "vibrating": bool(flags & SECF_VIB),
         "near": bool(flags & SECF_NEAR),
         "locked": bool(flags & SECF_LOCKED),
+        "silenced": bool(flags & SECF_SILENCED),
     }

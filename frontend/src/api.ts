@@ -79,7 +79,7 @@ export const api = {
   setNearThreshold: (cm: number) => post<CommandAck>('/api/control/near-threshold', { cm }),
   setSecurity: (mode: 'arm' | 'disarm') => post<CommandAck>('/api/control/security', { mode }),
   silence: () => post<CommandAck>('/api/control/silence'),
-  setWindow: (state: 'open' | 'close') => post<CommandAck>('/api/control/window', { state }),
+  setWindow: (state: 'open' | 'close' | 'auto') => post<CommandAck>('/api/control/window', { state }),
 
   mockDoor: (opened: boolean) => post('/api/mock/door', { opened }),
   mockVibration: () => post('/api/mock/vibration'),

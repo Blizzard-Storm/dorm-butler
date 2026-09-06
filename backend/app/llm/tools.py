@@ -172,10 +172,10 @@ def tool_schemas() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "set_window",
-                "description": "控制通风窗开合。注意：当前固件不支持该命令，调用会明确返回不支持。",
+                "description": "控制通风窗开合，或交回 NodeB 的温度自动闭环。",
                 "parameters": {
                     "type": "object",
-                    "properties": {"state": {"type": "string", "enum": ["open", "close"]}},
+                    "properties": {"state": {"type": "string", "enum": ["open", "close", "auto"]}},
                     "required": ["state"],
                     "additionalProperties": False,
                 },
@@ -362,8 +362,8 @@ class ToolExecutor:
 
         if name == "set_window":
             state = args.get("state")
-            if state not in ("open", "close"):
-                raise ValueError(f"state 必须是 open 或 close，收到 {state!r}")
+            if state not in ("open", "close", "auto"):
+                raise ValueError(f"state 必须是 open、close 或 auto，收到 {state!r}")
             return {"state": state}
 
         raise ValueError(f"未知控制命令：{name}")

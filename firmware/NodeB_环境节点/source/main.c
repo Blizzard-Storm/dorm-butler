@@ -164,6 +164,7 @@ xdata unsigned char WinOpen;                 /* 通风窗状态 0 关 / 1 开 */
 
 xdata unsigned char CfgTempSet = DEF_TEMPSET;/* 风扇启动温度阈值，主站可下发覆盖 */
 xdata unsigned char FanManual  = 255;        /* 255 = 自动；0~100 = 主站强制指定占空比 */
+xdata unsigned char WinManual;               /* 0 = 温度自动；1 = 主站手动开合 */
 
 xdata unsigned int  RxOkCount;               /* 收到并通过 CRC 的请求帧数 */
 xdata unsigned int  RxErrCount;              /* CRC 错误帧数 */
@@ -271,6 +272,7 @@ void UpdateWindow()
 {
 	int over = Temp10 - (int)CfgTempSet * 10;
 
+	if(WinManual) return;
 	if(GetStepMotorStatus(WINDOW_MOTOR) == enumStepMotorBusy) return;
 
 	if(WinOpen == 0 && over >= 30)
@@ -297,6 +299,8 @@ void BuildRsp(unsigned char func)
 	if(WinOpen)                     flags |= ENVF_WIN_OPEN;
 	if(Temp10 >= (int)CfgTempSet * 10) flags |= ENVF_TEMP_HI;
 	if(LuxLevel <= LUX_LOW_LEVEL)   flags |= ENVF_LUX_LOW;
+	if(FanManual <= 100)            flags |= ENVF_FAN_MANUAL;
+	if(WinManual)                   flags |= ENVF_WIN_MANUAL;
 
 	RspBuf[F_ADDR] = ADDR_ENV;
 	RspBuf[F_FUNC] = func;
@@ -345,8 +349,26 @@ void myUart2Rxd_callback()
 		break;
 
 	case FUNC_ACT:
-		FanManual = ReqBuf[REQ_ARG0];        /* 0~100 强制占空比，255 交回自动 */
-		UpdateFan();
+		if(ReqBuf[REQ_ARG0] <= 100 || ReqBuf[REQ_ARG0] == ACT_ENV_FAN_AUTO)
+		{
+			FanManual = ReqBuf[REQ_ARG0];
+			UpdateFan();
+		}
+		else if(ReqBuf[REQ_ARG0] == ACT_ENV_WIN_AUTO)
+		{
+			WinManual = 0;
+			UpdateWindow();
+		}
+		else if(ReqBuf[REQ_ARG0] == ACT_ENV_WIN_OPEN || ReqBuf[REQ_ARG0] == ACT_ENV_WIN_CLOSE)
+		{
+			unsigned char open = (unsigned char)(ReqBuf[REQ_ARG0] == ACT_ENV_WIN_OPEN);
+			WinManual = 1;
+			if(open != WinOpen && GetStepMotorStatus(WINDOW_MOTOR) != enumStepMotorBusy)
+			{
+				if(SetStepMotor(WINDOW_MOTOR, WINDOW_SPEED,
+				   open ? WINDOW_STEPS : -WINDOW_STEPS) == enumSetStepMotorOK) WinOpen = open;
+			}
+		}
 		BuildRsp(FUNC_ACT);
 		Uart2Print(RspBuf, RSP_LEN);
 		break;
@@ -666,6 +688,7 @@ void main()
 	   RxOkCount / RxErrCount 随机会让通信页显示出根本不存在的总线错误。 */
 	FanDuty    = 0;
 	WinOpen    = 0;
+	WinManual  = 0;
 	PollMiss   = 0;
 	RxOkCount  = 0;
 	RxErrCount = 0;

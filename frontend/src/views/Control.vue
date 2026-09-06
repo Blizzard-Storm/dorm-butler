@@ -182,9 +182,20 @@ const alarming = computed(() => (s.value?.security.alarm_level ?? 0) >= 2)
           </template>
           {{ cap('set_window')?.reason }}
         </NTooltip>
+        <NTooltip :disabled="canDo('set_window')">
+          <template #trigger>
+            <span>
+              <NButton :disabled="!canDo('set_window')" @click="run('win', () => api.setWindow('auto'))">
+                自动
+              </NButton>
+            </span>
+          </template>
+          {{ cap('set_window')?.reason }}
+        </NTooltip>
         <NTag v-if="!canDo('set_window')" type="warning" size="small" round>固件不支持</NTag>
+        <span class="cur">当前：{{ s?.env.window_state === null ? '未知' : (s?.env.window_state === 'open' ? '打开' : '关闭') }} · {{ s?.env.window_mode === 'manual' ? '手动' : (s?.env.window_mode === 'auto' ? '自动' : '模式未知') }}</span>
       </NSpace>
-      <div class="note">{{ cap('set_window')?.reason }}</div>
+      <div class="note">自动模式由 NodeB 根据温度阈值闭环控制；开窗、关窗会保持手动模式，直到点击“自动”。</div>
     </NCard>
 
     <div class="section-title">安防控制 · 节点C</div>
@@ -231,6 +242,7 @@ const alarming = computed(() => (s.value?.security.alarm_level ?? 0) >= 2)
           静音当前报警
         </NButton>
         <span class="cur">静音只停声音，安防状态保持不变。</span>
+        <NTag v-if="s?.security.silenced" type="success" size="small" round>已静音</NTag>
       </NSpace>
     </NCard>
 

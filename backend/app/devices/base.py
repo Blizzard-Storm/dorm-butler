@@ -127,6 +127,7 @@ class SystemState:
     fan_duty: int | None = None         # PWM 输出百分比，不是实测转速
     fan_mode: str = "auto"              # auto | manual
     window_state: str | None = None     # 软件状态，无位置反馈
+    window_mode: str | None = None      # auto | manual；节点离线/旧固件为 None
     temp_high: bool | None = None
 
     # 安防（节点C）
@@ -139,6 +140,7 @@ class SystemState:
     vib_count: int | None = None
     door_count: int | None = None
     near: bool | None = None
+    silenced: bool | None = None
 
     # 参数
     temp_threshold: int = 28
@@ -182,6 +184,7 @@ class SystemState:
                 "fan_duty": self.fan_duty,
                 "fan_mode": self.fan_mode,
                 "window_state": self.window_state,
+                "window_mode": self.window_mode,
             },
             "security": {
                 "distance_cm": self.distance_cm,
@@ -193,6 +196,7 @@ class SystemState:
                 "vib_count": self.vib_count,
                 "door_count": self.door_count,
                 "near": self.near,
+                "silenced": self.silenced,
             },
             "settings": {
                 "temp_threshold": self.temp_threshold,

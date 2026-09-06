@@ -23,7 +23,7 @@
 | `set_temperature_threshold` | 控制 | `celsius` 10-40 | 与 NodeB `SETCFG` 区间一致 |
 | `set_security_mode` | 控制·**敏感** | `mode` arm/disarm | 需用户二次确认 |
 | `silence_alarm` | 控制·**敏感** | 无 | 需用户二次确认 |
-| `set_window` | 控制 | `state` open/close | 当前固件不支持，必定返回 `unsupported` |
+| `set_window` | 控制 | `state` open/close/auto | NodeB 回执确认；auto 恢复温度闭环 |
 
 ## 敏感操作的二次确认流程
 
@@ -70,7 +70,7 @@
 | 密钥不出后端 | 只从环境变量读，前端接口从不返回 |
 | 无密钥可降级 | `chat()` 直接返回说明文案，其余功能不受影响 |
 | 值域夹紧 | Schema + 服务端 `_validate()` + 固件从站三重 |
-| 禁止直接执行 | 未开放 `FUNC_ACT` 强制占空比一类的危险命令给模型 |
+| 执行器命令闭环 | `FUNC_ACT` 由 NodeA 转发，目标从站应答后才标记成功 |
 | 全部留痕 | AI 发出的命令与手动命令进同一张 `commands` 表，可审计 |
 | 调用超时 | 默认 30s，失败返回可读错误而不是卡死 |
 

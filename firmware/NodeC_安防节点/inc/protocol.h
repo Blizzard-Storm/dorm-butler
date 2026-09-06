@@ -101,8 +101,17 @@
      发给 ENV(0x02)： arg0 = 风扇启动温度阈值(摄氏度)   arg1 = 保留   arg2/arg3 = 保留
      发给 SEC(0x03)： arg0 = 布防 0/1                  arg1 = 接近提示阈值(cm)   arg2/arg3 = 保留
    FUNC_ACT 的参数含义
-     发给 ENV(0x02)： arg0 = 手动风扇占空比 0~100，255 表示交回自动控制
-     发给 SEC(0x03)： arg0 = 1 上锁 / 0 开锁                                          */
+     发给 ENV(0x02)： arg0 = 0~100 手动风扇占空比；252 关窗；253 开窗；254 窗户自动；255 风扇自动
+     发给 SEC(0x03)： arg0 = 0 开锁；1 上锁；2 报警静音                              */
+
+#define ACT_ENV_WIN_CLOSE   252
+#define ACT_ENV_WIN_OPEN    253
+#define ACT_ENV_WIN_AUTO    254
+#define ACT_ENV_FAN_AUTO    255
+
+#define ACT_SEC_UNLOCK      0
+#define ACT_SEC_LOCK        1
+#define ACT_SEC_SILENCE     2
 
 
 /*==================================================================================================
@@ -132,6 +141,8 @@
 #define ENVF_WIN_OPEN       0x02        /* bit1 通风窗已打开 */
 #define ENVF_TEMP_HI        0x04        /* bit2 高温告警 */
 #define ENVF_LUX_LOW        0x08        /* bit3 光线过暗 */
+#define ENVF_FAN_MANUAL     0x10        /* bit4 风扇处于手动占空比模式 */
+#define ENVF_WIN_MANUAL     0x20        /* bit5 通风窗处于手动模式 */
 
 /* ---- 节点C 安防节点 ---- */
 #define D_SEC_TYPE          0           /* = NODE_TYPE_SEC */
@@ -152,6 +163,7 @@
 #define SECF_VIB            0x04        /* bit2 检测到异动 */
 #define SECF_NEAR           0x08        /* bit3 门口有人靠近 */
 #define SECF_LOCKED         0x10        /* bit4 锁舌在锁上位置 */
+#define SECF_SILENCED       0x20        /* bit5 当前报警已静音 */
 
 #define SECST_DISARMED      0           /* 撤防 */
 #define SECST_ARMING        1           /* 布防倒计时中（给自己留出门时间） */

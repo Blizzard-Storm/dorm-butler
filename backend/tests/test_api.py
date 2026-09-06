@@ -80,13 +80,18 @@ def test_threshold_persists_across_restart(client):
     assert client.get("/api/settings").json()["stored"]["temp_threshold"] == "31"
 
 
-def test_window_is_reported_unsupported(client):
-    """固件没有通风窗下发通道，必须明确返回 unsupported 而不是假装成功。"""
+def test_window_command_lifecycle(client):
     body = client.post("/api/control/window", json={"state": "open"}).json()
-    assert body["status"] == "unsupported"
+    assert body["status"] == "pending"
     settled = _wait_settled(client, body["command_id"])
-    assert settled["status"] == "unsupported"
-    assert "固件" in settled["error"]
+    assert settled["status"] == "confirmed"
+    state = client.get("/api/status").json()
+    assert state["env"]["window_state"] == "open"
+    assert state["env"]["window_mode"] == "manual"
+
+    body = client.post("/api/control/window", json={"state": "auto"}).json()
+    assert _wait_settled(client, body["command_id"])["status"] == "confirmed"
+    assert client.get("/api/status").json()["env"]["window_mode"] == "auto"
 
 
 def test_security_arm_goes_through_arming_state(client):

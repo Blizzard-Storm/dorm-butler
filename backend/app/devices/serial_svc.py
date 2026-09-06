@@ -7,9 +7,8 @@
           （0xAA 帧头 + CRC16），NodeA 改 Cfg[] 并经由已有的 485 轮询状态机
           下发给从站，从站确认后回一行 ASCII 回执 ACK s=... r=...
 
-下行只覆盖 Cfg[] 里的五个参数（FUNC_SETCFG）。风扇手动调速、报警消音这类
-需要转发 FUNC_ACT 的命令固件还没做，一律如实返回 UNSUPPORTED 并说明原因，
-绝不写进串口然后假装成功 —— 把"成功写入串口"当作"设备已执行"是禁止的。
+下行同时覆盖 Cfg[] 参数（FUNC_SETCFG）和执行器命令（FUNC_ACT）。执行器命令
+由 NodeA 转发给从站，只有收到从站 FUNC_ACT 应答后才向 PC 返回成功回执。
 
 只有收到 result=0 的回执才标 confirmed；从站离线、未确认、参数越界
 都各有对应状态，不会被含糊成"成功"。
@@ -63,27 +62,21 @@ class SerialDeviceService(DeviceService):
         self._seq = 0
         self._inflight: dict[int, dict] = {}
         self._write_lock = threading.Lock()
+        self._command_lock = asyncio.Lock()
 
         s = self.state
         s.mode = self.mode
         s.temp_threshold = F.DEF_TEMPSET
         s.near_threshold = F.DEF_NEARCM
-        # NodeA 的 USE_PC_CMD 通道只覆盖 Cfg[] 里的五个参数。
-        # 没有下发通路的命令一律如实标 unsupported，前端置灰并说明原因。
         s.capabilities = {
             CommandName.SET_TEMP_THRESHOLD: Capability(True),
             CommandName.SET_SECURITY_MODE: Capability(True),
             CommandName.SET_NEAR_THRESHOLD: Capability(True),
             CommandName.SET_ALARM: Capability(True),
             CommandName.SYNC_TIME: Capability(True),
-            CommandName.SET_FAN: Capability(
-                False, "风扇手动调速需要 NodeA 向 NodeB 转发 FUNC_ACT，"
-                       "当前固件的下行通道只支持 FUNC_SETCFG 参数下发"),
-            CommandName.SILENCE_ALARM: Capability(
-                False, "消音是 NodeC 的本地动作（按 K3），没有对应的配置参数，"
-                       "需在固件里新增 FUNC_ACT 转发后才能远程触发"),
-            CommandName.SET_WINDOW: Capability(
-                False, "固件未提供通风窗下发命令，窗户仅由 NodeB 本地温度闭环控制"),
+            CommandName.SET_FAN: Capability(True),
+            CommandName.SILENCE_ALARM: Capability(True),
+            CommandName.SET_WINDOW: Capability(True),
         }
 
     # ------------------------------------------------------------------ 生命周期
@@ -248,10 +241,13 @@ class SerialDeviceService(DeviceService):
             if r.node_b_online:
                 s.node_b.poll_miss = st.env_poll_miss
                 s.window_state = "open" if st.env_flags & F.ENVF_WIN_OPEN else "closed"
+                s.fan_mode = "manual" if st.env_flags & F.ENVF_FAN_MANUAL else "auto"
+                s.window_mode = "manual" if st.env_flags & F.ENVF_WIN_MANUAL else "auto"
                 s.temp_high = bool(st.env_flags & F.ENVF_TEMP_HI)
             else:
                 s.node_b.poll_miss = None
                 s.window_state = None
+                s.window_mode = None
 
             if r.node_c_online:
                 s.node_c.poll_miss = st.sec_poll_miss
@@ -261,18 +257,22 @@ class SerialDeviceService(DeviceService):
                 s.vib_count = st.vib_count
                 s.door_count = st.door_count
                 s.near = bool(st.sec_flags & F.SECF_NEAR)
+                s.silenced = bool(st.sec_flags & F.SECF_SILENCED)
             else:
                 s.node_c.poll_miss = None
                 s.door_state = s.security_state = s.lock_state = None
                 s.vib_count = s.door_count = None
                 s.near = None
+                s.silenced = None
         else:
             s.main_loops = None
             s.master_reply_miss_b = s.master_reply_miss_c = None
             s.node_a.poll_miss = s.node_b.poll_miss = s.node_c.poll_miss = None
             s.door_state = s.security_state = s.lock_state = None
             s.window_state = None
+            s.window_mode = None
             s.vib_count = s.door_count = None
+            s.silenced = None
 
         self._last_report = r
 
@@ -335,7 +335,9 @@ class SerialDeviceService(DeviceService):
                 s.distance_valid = False
                 s.door_state = s.security_state = s.lock_state = None
                 s.window_state = None
+                s.window_mode = None
                 s.vib_count = s.door_count = None
+                s.silenced = None
                 s.near = s.temp_high = None
                 s.main_loops = None
                 s.master_reply_miss_b = s.master_reply_miss_c = None
@@ -376,7 +378,9 @@ class SerialDeviceService(DeviceService):
             "alarm_level": s.alarm_level,
             "fan_duty": s.fan_duty,
             "window_state": s.window_state,
+            "window_mode": s.window_mode,
             "lock_state": s.lock_state,
+            "silenced": s.silenced,
             "node_a_online": s.node_a.online,
             "node_b_online": s.node_b.online,
             "node_c_online": s.node_c.online,
@@ -441,11 +445,12 @@ class SerialDeviceService(DeviceService):
         铁律：只有收到 result=0 的回执才算 confirmed。
         写进串口成功不等于设备执行了。
         """
-        for step in steps:
-            ok = await self._deliver_one(cmd, step)
-            if not ok:
-                return
-        await self._settle(cmd, CommandStatus.CONFIRMED, None)
+        async with self._command_lock:
+            for step in steps:
+                ok = await self._deliver_one(cmd, step)
+                if not ok:
+                    return
+            await self._settle(cmd, CommandStatus.CONFIRMED, None)
 
     async def _deliver_one(self, cmd: Command, step: tuple) -> bool:
         """下发一帧。step = (功能码, arg0, arg1, arg2)。
@@ -513,6 +518,12 @@ class SerialDeviceService(DeviceService):
             s.near_threshold = int(p["cm"])
         elif cmd.name == CommandName.SET_ALARM:
             s.alarm_hour, s.alarm_minute = int(p["hour"]), int(p["minute"])
+        elif cmd.name == CommandName.SET_FAN:
+            s.fan_mode = str(p["mode"])
+        elif cmd.name == CommandName.SET_WINDOW:
+            s.window_mode = "auto" if p["state"] == "auto" else "manual"
+        elif cmd.name == CommandName.SILENCE_ALARM:
+            s.silenced = True
 
     async def _settle(self, cmd: Command, status: CommandStatus, error: str | None) -> None:
         cmd.status = status
@@ -527,14 +538,27 @@ class SerialDeviceService(DeviceService):
                 "command", "warning", f"命令 {cmd.name} 未成功：{error}"))
 
 
-def _plan_command(name: str, params: dict) -> tuple[str, list[tuple[int, int]] | None]:
-    """把上层命令翻译成 (目标节点, [(Cfg 下标, 值), ...])。
+def _plan_command(name: str, params: dict) -> tuple[str, list[tuple] | None]:
+    """把上层命令翻译成 (目标节点, [PC 命令帧参数, ...])。
 
     返回 None 表示当前固件没有这条下发通路 —— 那就如实标 unsupported，
     绝不假装成功。
     """
     def cfg(index: int, value: int) -> tuple:
         return (F.FUNC_SETCFG, index, value, 0)
+
+    def act(slave: int, value: int) -> tuple:
+        return (F.FUNC_ACT, slave, value, 0)
+
+    if name == CommandName.SET_FAN:
+        value = F.ACT_ENV_FAN_AUTO if params.get("mode") == "auto" else int(params["duty_percent"])
+        return "B", [act(0, value)]
+    if name == CommandName.SET_WINDOW:
+        values = {"close": F.ACT_ENV_WIN_CLOSE, "open": F.ACT_ENV_WIN_OPEN,
+                  "auto": F.ACT_ENV_WIN_AUTO}
+        return "B", [act(0, values[str(params["state"])])]
+    if name == CommandName.SILENCE_ALARM:
+        return "C", [act(1, F.ACT_SEC_SILENCE)]
 
     if name == CommandName.SET_TEMP_THRESHOLD:
         return "B", [cfg(F.CFG_TEMPSET, int(params["celsius"]))]

@@ -231,6 +231,7 @@ void BuildRsp(unsigned char func)
 	if(VibInWindow) flags |= SECF_VIB;
 	if(NearFlag)   flags |= SECF_NEAR;
 	if(Locked)     flags |= SECF_LOCKED;
+	if(Silenced)   flags |= SECF_SILENCED;
 
 	RspBuf[F_ADDR] = ADDR_SEC;
 	RspBuf[F_FUNC] = func;
@@ -283,7 +284,15 @@ void myUart2Rxd_callback()
 		break;
 
 	case FUNC_ACT:
-		SetLock(ReqBuf[REQ_ARG0] ? 1 : 0);   /* 主站直接控制锁舌，联调 / 演示用 */
+		if(ReqBuf[REQ_ARG0] == ACT_SEC_SILENCE)
+		{
+			Silenced = 1;
+			StopAlarmSound();
+		}
+		else if(ReqBuf[REQ_ARG0] <= ACT_SEC_LOCK)
+		{
+			SetLock(ReqBuf[REQ_ARG0]);
+		}
 		BuildRsp(FUNC_ACT);
 		Uart2Print(RspBuf, RSP_LEN);
 		break;

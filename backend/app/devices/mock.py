@@ -53,6 +53,7 @@ class MockDeviceService(DeviceService):
         self._fan_duty = 0
         self._fan_manual: int | None = None
         self._window_open = False
+        self._window_manual = False
 
         # 安防
         self._sec_state = F.SECST_DISARMED
@@ -83,11 +84,7 @@ class MockDeviceService(DeviceService):
             CommandName.SET_NEAR_THRESHOLD: Capability(True),
             CommandName.SET_ALARM: Capability(True),
             CommandName.SYNC_TIME: Capability(True),
-            # 固件里通风窗只由 NodeB 本地温度闭环驱动，没有下发通道。
-            # 模拟层不给它开后门，否则接真硬件时页面要返工。
-            CommandName.SET_WINDOW: Capability(
-                False, "固件未提供通风窗下发命令，窗户仅由 NodeB 本地温度闭环控制"
-            ),
+            CommandName.SET_WINDOW: Capability(True),
         }
 
     # ------------------------------------------------------------------ 生命周期
@@ -168,6 +165,8 @@ class MockDeviceService(DeviceService):
 
     def _step_window(self) -> None:
         """复刻 NodeB UpdateWindow()。"""
+        if self._window_manual:
+            return
         over = self._temp - self.state.temp_threshold
         if not self._window_open and over >= 3.0:
             self._window_open = True
@@ -353,6 +352,17 @@ class MockDeviceService(DeviceService):
             self._silenced = True
             self._emit_event("security", "info", "报警已静音（安防状态保持）")
 
+        elif cmd.name == CommandName.SET_WINDOW:
+            state = p.get("state")
+            if state == "auto":
+                self._window_manual = False
+                self._step_window()
+            elif state in {"open", "close"}:
+                self._window_manual = True
+                self._window_open = state == "open"
+            else:
+                raise ValueError(f"未知通风窗模式：{state}")
+
         else:
             raise ValueError(f"未实现的命令：{cmd.name}")
 
@@ -384,6 +394,7 @@ class MockDeviceService(DeviceService):
         s.lux_adc = None
         s.fan_duty = self._fan_duty if b_online else None
         s.window_state = ("open" if self._window_open else "closed") if b_online else None
+        s.window_mode = ("manual" if self._window_manual else "auto") if b_online else None
 
         dist_valid = c_online and F.DIST_MIN <= self._distance <= F.DIST_MAX
         s.distance_cm = self._distance if dist_valid else None
@@ -395,6 +406,7 @@ class MockDeviceService(DeviceService):
         s.vib_count = self._vib_count if c_online else None
         s.door_count = self._door_count if c_online else None
         s.near = (dist_valid and self._distance <= s.near_threshold) if c_online else None
+        s.silenced = self._silenced if c_online else None
 
         s.link_detail = {
             "simulated": True,

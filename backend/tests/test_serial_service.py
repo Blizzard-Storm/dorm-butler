@@ -64,15 +64,18 @@ def test_fields_absent_from_report_stay_unknown(svc):
 
 
 def test_status_line_populates_real_device_states_and_health(svc):
-    feed(svc, b"STA BF=007 BP=002 CF=027 CS=2 V=012 D=003 CP=001 AP=000 L=12345 RB=0 RC=1\r\n")
+    feed(svc, b"STA BF=055 BP=002 CF=059 CS=2 V=012 D=003 CP=001 AP=000 L=12345 RB=0 RC=1\r\n")
     feed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
     s = svc.state
     assert s.window_state == "open"
+    assert s.window_mode == "manual"
+    assert s.fan_mode == "manual"
     assert s.temp_high is True
     assert s.door_state == "open"
     assert s.security_state == "armed"
     assert s.lock_state == "locked"
     assert s.near is True
+    assert s.silenced is True
     assert (s.vib_count, s.door_count) == (12, 3)
     assert (s.node_a.poll_miss, s.node_b.poll_miss, s.node_c.poll_miss) == (0, 2, 1)
     assert s.main_loops == 12345
@@ -117,17 +120,18 @@ def test_noise_and_partial_frames_recover(svc):
     assert svc.parser.lines_ok >= 1
 
 
-@pytest.mark.parametrize("name", [
-    CommandName.SET_FAN,          # 需要转发 FUNC_ACT，固件下行只做了 SETCFG
-    CommandName.SILENCE_ALARM,    # NodeC 的本地动作，没有对应配置参数
-    CommandName.SET_WINDOW,       # 固件根本没有通风窗下发命令
+@pytest.mark.parametrize("name,params,node,value", [
+    (CommandName.SET_FAN, {"mode": "manual", "duty_percent": 45}, "B", 45),
+    (CommandName.SET_FAN, {"mode": "auto"}, "B", F.ACT_ENV_FAN_AUTO),
+    (CommandName.SET_WINDOW, {"state": "open"}, "B", F.ACT_ENV_WIN_OPEN),
+    (CommandName.SET_WINDOW, {"state": "close"}, "B", F.ACT_ENV_WIN_CLOSE),
+    (CommandName.SET_WINDOW, {"state": "auto"}, "B", F.ACT_ENV_WIN_AUTO),
+    (CommandName.SILENCE_ALARM, {}, "C", F.ACT_SEC_SILENCE),
 ])
-def test_commands_without_firmware_path_are_unsupported(svc, name):
-    """固件没有这条下发通路时，如实标 unsupported，绝不写进串口然后假装成功。"""
-    cmd = asyncio.run(svc.submit(name, {}))
-    assert cmd.status == CommandStatus.UNSUPPORTED
-    assert cmd.error                       # 必须说明为什么不支持
-    assert svc.state.capabilities[name].supported is False
+def test_actuator_commands_build_func_act(name, params, node, value):
+    target, plan = _plan_command(name, params)
+    assert target == node
+    assert plan == [(F.FUNC_ACT, 0 if node == "B" else 1, value, 0)]
 
 
 @pytest.mark.parametrize("name,params,cfg_index,value", [
