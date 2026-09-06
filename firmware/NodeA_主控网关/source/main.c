@@ -208,10 +208,15 @@ code unsigned char SlaveAddr[2] = {ADDR_ENV, ADDR_SEC};
  *       [0] 0xAA  帧头，交给 SetUart1Rxd 做包头匹配
  *       [1] seq   请求编号 1~255，0 保留。PC 靠它匹配回执，迟到的回包会被丢弃
  *       [2] tgt   目标标识，原样回填，本机不解释
- *       [3] func  功能码，复用 protocol.h 的 FUNC_SETCFG
- *       [4] idx   参数序号 0~4，与本机 Cfg[] 下标一致
- *       [5] val   参数值
- *       [6] [7]   保留
+ *       [3] func  功能码：
+ *                   FUNC_SETCFG (0x10)  改 Cfg[] 参数，见下面 idx/val
+ *                   FUNC_PC_SETTIME     PC 给板子对时，见下面 时/分/秒
+ *       [4] idx   FUNC_SETCFG 时是参数序号 0~4（与本机 Cfg[] 下标一致）
+ *                 FUNC_PC_SETTIME 时是【时】0~23
+ *       [5] val   FUNC_SETCFG 时是参数值
+ *                 FUNC_PC_SETTIME 时是【分】0~59
+ *       [6]       FUNC_PC_SETTIME 时是【秒】0~59，其余功能保留
+ *       [7]       保留
  *       [8] [9]   CRC16/Modbus，低字节在前
  *
  *   回执 NodeA -> PC，固定 27 字节的 ASCII 行：
@@ -243,6 +248,12 @@ code unsigned char SlaveAddr[2] = {ADDR_ENV, ADDR_SEC};
 #define ACK_LEN             27
 #define CMD_HDR             0xAA
 
+/* PC 对时。DS1302 靠纽扣电池独立走时，一旦电池换过或长期不校，
+   板上时间就会和现实差开 —— 而闹钟、报文时间戳都依赖它。
+   这个功能码只在 PC <-> NodeA 之间使用，不上 485，所以不写进 protocol.h。
+   只同步时分秒，不动日期：本工程里没有任何逻辑用到年月日。 */
+#define FUNC_PC_SETTIME     0x11
+
 #define ACK_OK              0x00        /* 已生效（本机参数），或从站已确认 */
 #define ACK_BADARG          0x01        /* 参数越界，未采纳 */
 #define ACK_OFFLINE         0x02        /* 目标从站离线，已缓存待其上线后下发 */
@@ -259,6 +270,26 @@ code unsigned char PcHdr[1] = {CMD_HDR};
        0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
                             seq 6~8        tgt 12,13     r 17,18       detail 22~24   */
 code char AckTmpl[ACK_LEN + 1] = "ACK s=000 t=00 r=00 d=000\r\n";
+
+/* 本机参数回报。PC 侧原来只能显示"自己记得的"参数值，
+   用户拿摇杆在板子上改过之后，网页那边完全不知道，显示的是过期的值。
+   让 NodeA 每秒把 Cfg[] 真实内容报上来，网页显示的就是设备的事实。
+
+       CFG T=28 A=0 H=07 M=00 N=060        共 30 字节（含结尾两字节）
+
+       T 风扇温度阈值   A 布防 0/1   H 闹钟时   M 闹钟分   N 接近阈值 cm
+
+   下标：T 6,7   A 11   H 15,16   M 20,21   N 25,26,27  */
+#define CFG_LEN  30
+code char CfgTmpl[CFG_LEN + 1] = "CFG T=00 A=0 H=00 M=00 N=000\r\n";
+xdata char CfgBuf[CFG_LEN];
+xdata unsigned char CfgDiv;
+
+/* 回执待发标志。
+   原来 SendAck 遇到串口忙就直接放弃这一条，靠 PC 3 秒超时重发整条命令 ——
+   实测一条两帧的闹钟命令因此用掉 4 次尝试才成功，因为每秒那条 43 字节
+   报文占着发送器。改成挂起，等 10mS 回调里发送器一空就补发出去。 */
+xdata unsigned char AckPending;
 
 xdata unsigned char CmdBuf[CMD_LEN];
 xdata char AckBuf[ACK_LEN];
@@ -477,16 +508,32 @@ void AckN(unsigned char pos, unsigned char v, unsigned char n)
 
 void SendAck(unsigned char result, unsigned char detail)
 {
-	if(GetUart1TxStatus() == enumUart1TxFree)
-	{
-		AckN(6,  PcSeq,  3);
-		AckN(12, PcTgt,  2);
-		AckN(17, result, 2);
-		AckN(22, detail, 3);
-		Uart1Print(AckBuf, ACK_LEN);
-	}
+	AckN(6,  PcSeq,  3);
+	AckN(12, PcTgt,  2);
+	AckN(17, result, 2);
+	AckN(22, detail, 3);
+	AckPending = 1;              /* 由 10mS 回调择机发出，不在这里因为串口忙就丢掉 */
 	PcSeq  = 0;
 	PcWait = 0;
+}
+
+/* 本机参数回报，30 字节 */
+void SendCfg()
+{
+	if(GetUart1TxStatus() != enumUart1TxFree) return;   /* 这条丢了无所谓，下一秒还会报 */
+
+	CfgBuf[6]  = (char)('0' + Cfg[CFG_TEMPSET] / 10);
+	CfgBuf[7]  = (char)('0' + Cfg[CFG_TEMPSET] % 10);
+	CfgBuf[11] = (char)('0' + (Cfg[CFG_ARM] ? 1 : 0));
+	CfgBuf[15] = (char)('0' + Cfg[CFG_ALMH] / 10);
+	CfgBuf[16] = (char)('0' + Cfg[CFG_ALMH] % 10);
+	CfgBuf[20] = (char)('0' + Cfg[CFG_ALMM] / 10);
+	CfgBuf[21] = (char)('0' + Cfg[CFG_ALMM] % 10);
+	CfgBuf[25] = (char)('0' + Cfg[CFG_NEARCM] / 100);
+	CfgBuf[26] = (char)('0' + (Cfg[CFG_NEARCM] / 10) % 10);
+	CfgBuf[27] = (char)('0' + Cfg[CFG_NEARCM] % 10);
+
+	Uart1Print(CfgBuf, CFG_LEN);
 }
 
 /*----------------------------------------------------------------------------------
@@ -505,6 +552,27 @@ void myUart1Rxd_callback()
 
 	PcSeq = CmdBuf[1];
 	PcTgt = CmdBuf[2];
+
+	if(CmdBuf[3] == FUNC_PC_SETTIME)
+	{
+		struct_DS1302_RTC t;
+
+		if(CmdBuf[4] > 23) { SendAck(ACK_BADARG, CmdBuf[4]); return; }
+		if(CmdBuf[5] > 59) { SendAck(ACK_BADARG, CmdBuf[5]); return; }
+		if(CmdBuf[6] > 59) { SendAck(ACK_BADARG, CmdBuf[6]); return; }
+
+		/* 先读回来，保留日期与星期，只改时分秒。DS1302 全部字段都是 BCD 码。 */
+		t        = RTC_Read();
+		t.hour   = (unsigned char)(((CmdBuf[4] / 10) << 4) | (CmdBuf[4] % 10));
+		t.minute = (unsigned char)(((CmdBuf[5] / 10) << 4) | (CmdBuf[5] % 10));
+		t.second = (unsigned char)(((CmdBuf[6] / 10) << 4) | (CmdBuf[6] % 10));
+		RTC_Write(t);
+		NowTime = t;                                 /* 立刻反映到显示，不等下一次 RTC_Read */
+		AlarmFired = 0;                              /* 时间跳变后，本分钟的闹钟状态要重新判断 */
+		SetBeep(3000, 8);
+		SendAck(ACK_OK, 0);
+		return;
+	}
 
 	if(CmdBuf[3] != FUNC_SETCFG) { SendAck(ACK_BADFUNC, CmdBuf[3]); return; }
 
@@ -635,6 +703,14 @@ void my10mS_callback()
 	}
 
 #if (USE_PC_CMD)
+	/* 有回执欠着就抓紧发。发送器一空就走，最迟 10mS 后送出，
+	   比原来"串口忙就丢、等 PC 3 秒超时重发"快两个数量级。 */
+	if(AckPending && GetUart1TxStatus() == enumUart1TxFree)
+	{
+		Uart1Print(AckBuf, ACK_LEN);
+		AckPending = 0;
+	}
+
 	/* 从站迟迟不确认就回超时，别让 PC 一直悬着 */
 	if(PcWait)
 	{
@@ -798,6 +874,12 @@ void my100mS_callback()
 	if(++RtcDiv >= 2) { RtcDiv = 0; NowTime = RTC_Read(); }
 
 	if(++BlinkDiv >= 3) { BlinkDiv = 0; Blink = (unsigned char)(!Blink); }   /* 约 1.7Hz 闪烁 */
+
+#if (USE_PC_CMD)
+	/* 每秒报一次本机参数，和 1S 回调里那条主报文错开 300mS，避开发送器冲突 */
+	if(++CfgDiv >= 10) CfgDiv = 0;
+	if(CfgDiv == 3) SendCfg();
+#endif
 
 	Refresh();
 }
@@ -1017,9 +1099,11 @@ void main()
 	/* xdata 区在 Keil 默认的 STARTUP.A51 下不会被清零（XDATALEN 为 0），
 	   没给初值的变量上电是随机数，这里必须显式清。 */
 	PcSeq = 0;  PcWait = 0;  PcTgt = 0;  PcSlave = 0;
+	AckPending = 0;  CfgDiv = 0;
 	{
 		unsigned char k;
 		for(k = 0; k < ACK_LEN; k++) AckBuf[k] = AckTmpl[k];
+		for(k = 0; k < CFG_LEN; k++) CfgBuf[k] = CfgTmpl[k];
 	}
 	SetUart1Rxd(CmdBuf, CMD_LEN, PcHdr, 1);  /* 按 0xAA 帧头 + 固定 10 字节断帧 */
 #endif

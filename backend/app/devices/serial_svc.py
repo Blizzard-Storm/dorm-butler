@@ -80,6 +80,8 @@ class SerialDeviceService(DeviceService):
             CommandName.SET_TEMP_THRESHOLD: Capability(True),
             CommandName.SET_SECURITY_MODE: Capability(True),
             CommandName.SET_NEAR_THRESHOLD: Capability(True),
+            CommandName.SET_ALARM: Capability(True),
+            CommandName.SYNC_TIME: Capability(True),
             CommandName.SET_FAN: Capability(
                 False, "风扇手动调速需要 NodeA 向 NodeB 转发 FUNC_ACT，"
                        "当前固件的下行通道只支持 FUNC_SETCFG 参数下发"),
@@ -219,6 +221,14 @@ class SerialDeviceService(DeviceService):
 
         # 标定行（CAL）带来的原始 ADC。只有 NodeB 直连模式才有；
         # 经 NodeA 汇总时报文里没有这两个值，保持 None。
+        # 设备回报的真实参数优先于 PC 侧的记账 ——
+        # 用户拿摇杆在板子上改过，网页也要跟着变。
+        bc = self.parser.last_cfg
+        if bc is not None:
+            s.temp_threshold = bc.temp_threshold
+            s.near_threshold = bc.near_threshold
+            s.alarm_hour, s.alarm_minute = bc.alarm_hour, bc.alarm_minute
+
         cal = self.parser.last_cal
         if cal is not None and r.node_b_online:
             s.lux_adc = cal.raw_rop
@@ -290,6 +300,7 @@ class SerialDeviceService(DeviceService):
             "frames_ok": self.parser.lines_ok,
             "frames_bad": self.parser.lines_bad,
             "cal_lines": self.parser.cal_ok,
+            "cfg_lines": self.parser.cfg_ok,
             "bytes_dropped": self.parser.bytes_dropped,
             "last_bad_line": self.parser.last_bad_line,
         }
@@ -363,15 +374,30 @@ class SerialDeviceService(DeviceService):
             return cmd
 
         await bus.publish(TOPIC_COMMAND, cmd.as_dict())
-        asyncio.create_task(self._deliver(cmd, *plan))
+        asyncio.create_task(self._deliver(cmd, plan))
         return cmd
 
-    async def _deliver(self, cmd: Command, cfg_index: int, value: int) -> None:
+    async def _deliver(self, cmd: Command, steps: list[tuple]) -> None:
         """下发一条命令，等回执，超时重试。
+
+        一条上层命令可能对应多个参数（闹钟要分别下发时和分），
+        全部确认才算成功；任何一步失败，整条命令就是失败。
 
         铁律：只有收到 result=0 的回执才算 confirmed。
         写进串口成功不等于设备执行了。
         """
+        for step in steps:
+            ok = await self._deliver_one(cmd, step)
+            if not ok:
+                return
+        await self._settle(cmd, CommandStatus.CONFIRMED, None)
+
+    async def _deliver_one(self, cmd: Command, step: tuple) -> bool:
+        """下发一帧。step = (功能码, arg0, arg1, arg2)。
+
+        成功返回 True；失败时已经 settle 过，返回 False。
+        """
+        func, a0, a1, a2 = step
         settings = get_settings()
         attempts = settings.command_retries + 1
 
@@ -380,11 +406,11 @@ class SerialDeviceService(DeviceService):
             entry = {"event": asyncio.Event(), "ack": None}
             self._inflight[seq] = entry
             try:
-                frame = F.build_pc_command(seq, F.ADDR_MASTER, cfg_index, value)
+                frame = F.build_pc_command(seq, F.ADDR_MASTER, a0, a1, func=func, arg2=a2)
                 if not self._write(frame):
                     cmd.attempts += 1
                     await self._settle(cmd, CommandStatus.FAILED, "串口未连接，命令未发出")
-                    return
+                    return False
 
                 cmd.attempts += 1
                 cmd.status = CommandStatus.SENT
@@ -400,8 +426,8 @@ class SerialDeviceService(DeviceService):
 
             ack = entry["ack"]
             if ack.result == F.ACK_OK:
-                await self._settle(cmd, CommandStatus.CONFIRMED, None)
-            elif ack.result == F.ACK_OFFLINE:
+                return True                   # 这一步成了，交给调用方决定还有没有下一步
+            if ack.result == F.ACK_OFFLINE:
                 # 参数已被 NodeA 收下并标记待下发，但从站没确认过，
                 # 不能算执行成功。前端会显示失败原因，用户知道该去看节点在线状态。
                 await self._settle(cmd, CommandStatus.FAILED,
@@ -412,33 +438,64 @@ class SerialDeviceService(DeviceService):
                 detail = f"（detail={ack.detail}）" if ack.detail else ""
                 await self._settle(cmd, CommandStatus.FAILED,
                                    F.ACK_TEXT.get(ack.result, f"未知结果码 {ack.result}") + detail)
-            return
+            return False
 
         await self._settle(cmd, CommandStatus.TIMEOUT,
                            f"重试 {attempts} 次仍未收到回执")
+        return False
+
+    def _apply_to_state(self, cmd: Command) -> None:
+        """命令确认后把参数同步进本地状态。
+
+        只在 confirmed 时调用 —— 失败或未确认的值不能进状态，
+        否则页面上的"当前值"就变成了"上一次请求的值"。
+        """
+        p = cmd.params
+        s = self.state
+        if cmd.name == CommandName.SET_TEMP_THRESHOLD:
+            s.temp_threshold = int(p["celsius"])
+        elif cmd.name == CommandName.SET_NEAR_THRESHOLD:
+            s.near_threshold = int(p["cm"])
+        elif cmd.name == CommandName.SET_ALARM:
+            s.alarm_hour, s.alarm_minute = int(p["hour"]), int(p["minute"])
 
     async def _settle(self, cmd: Command, status: CommandStatus, error: str | None) -> None:
         cmd.status = status
         cmd.error = error
         cmd.settled_at = now()
+        if status is CommandStatus.CONFIRMED:
+            self._apply_to_state(cmd)
+            await self._push_state()
         await bus.publish(TOPIC_COMMAND, cmd.as_dict())
         if status is not CommandStatus.CONFIRMED:
             await bus.publish(TOPIC_EVENT, _event(
                 "command", "warning", f"命令 {cmd.name} 未成功：{error}"))
 
 
-def _plan_command(name: str, params: dict) -> tuple[str, tuple[int, int] | None]:
-    """把上层命令翻译成 (目标节点, (Cfg 下标, 值))。
+def _plan_command(name: str, params: dict) -> tuple[str, list[tuple[int, int]] | None]:
+    """把上层命令翻译成 (目标节点, [(Cfg 下标, 值), ...])。
 
     返回 None 表示当前固件没有这条下发通路 —— 那就如实标 unsupported，
     绝不假装成功。
     """
+    def cfg(index: int, value: int) -> tuple:
+        return (F.FUNC_SETCFG, index, value, 0)
+
     if name == CommandName.SET_TEMP_THRESHOLD:
-        return "B", (F.CFG_TEMPSET, int(params["celsius"]))
+        return "B", [cfg(F.CFG_TEMPSET, int(params["celsius"]))]
     if name == CommandName.SET_SECURITY_MODE:
-        return "C", (F.CFG_ARM, 1 if params.get("mode") == "arm" else 0)
+        return "C", [cfg(F.CFG_ARM, 1 if params.get("mode") == "arm" else 0)]
     if name == CommandName.SET_NEAR_THRESHOLD:
-        return "C", (F.CFG_NEARCM, int(params["cm"]))
+        return "C", [cfg(F.CFG_NEARCM, int(params["cm"]))]
+    if name == CommandName.SYNC_TIME:
+        # 对时只改时分秒，日期不动 —— 本工程没有任何逻辑用到年月日
+        return "A", [(F.FUNC_PC_SETTIME, int(params["hour"]),
+                      int(params["minute"]), int(params["second"]))]
+    if name == CommandName.SET_ALARM:
+        # 闹钟是 NodeA 本机参数（CfgTab 里 WHO=2），不经过 485，
+        # 所以不受从站在不在线影响，会真正返回"已确认"。时和分要分两帧下发。
+        return "A", [cfg(F.CFG_ALMH, int(params["hour"])),
+                     cfg(F.CFG_ALMM, int(params["minute"]))]
     return "-", None
 
 

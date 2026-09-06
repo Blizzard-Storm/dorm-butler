@@ -16,6 +16,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from ..config import get_settings
 from ..db import session_scope
 from ..devices.base import TERMINAL_STATUSES, CommandName, CommandStatus, DeviceService
 from ..models import Event, Telemetry
@@ -28,6 +29,8 @@ CONTROL_TOOLS = {
     CommandName.SET_SECURITY_MODE,
     CommandName.SILENCE_ALARM,
     CommandName.SET_WINDOW,
+    CommandName.SET_ALARM,
+    CommandName.SYNC_TIME,
 }
 
 # 需要用户二次确认的敏感操作。服务端在未确认时直接拒绝执行。
@@ -140,6 +143,34 @@ def tool_schemas() -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "set_alarm_time",
+                "description": "设置起床闹钟的时间。这是主控节点 NodeA 的本机参数，"
+                               "不经过 485 总线，因此不受环境节点、安防节点在不在线影响。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "hour": {"type": "integer", "minimum": 0, "maximum": 23},
+                        "minute": {"type": "integer", "minimum": 0, "maximum": 59},
+                    },
+                    "required": ["hour", "minute"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sync_board_time",
+                "description": "把电脑的当前时间同步给主控板的实时时钟。"
+                               "板子靠纽扣电池独立走时，长期不校会与现实偏开，"
+                               "而闹钟和数据时间戳都依赖它。用户说板上时间不对、"
+                               "要对时、要校准时间时调用。只改时分秒，不动日期。",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "set_window",
                 "description": "控制通风窗开合。注意：当前固件不支持该命令，调用会明确返回不支持。",
                 "parameters": {
@@ -167,7 +198,7 @@ class ToolExecutor:
             if name == "get_alarm_events":
                 return self._events(args)
             if name in {"set_fan", "set_temperature_threshold", "set_security_mode",
-                        "silence_alarm", "set_window"}:
+                        "silence_alarm", "set_window", "set_alarm_time", "sync_board_time"}:
                 return await self._control(name, args, confirmed)
             return {"ok": False, "error": f"未知工具：{name}"}
         except (KeyError, ValueError, TypeError) as exc:
@@ -263,7 +294,9 @@ class ToolExecutor:
             }
 
         params = self._validate(name, args)
-        cmd = await self.device.submit(name, params, source="ai")
+        cmd_name = {"set_alarm_time": CommandName.SET_ALARM,
+                    "sync_board_time": CommandName.SYNC_TIME}.get(name, name)
+        cmd = await self.device.submit(cmd_name, params, source="ai")
         settled = await self._await_settled(cmd.id)
 
         status = settled.status
@@ -312,6 +345,18 @@ class ToolExecutor:
                 raise ValueError(f"mode 必须是 arm 或 disarm，收到 {mode!r}")
             return {"mode": mode}
 
+        if name == "set_alarm_time":
+            h, m = int(args["hour"]), int(args["minute"])
+            if not 0 <= h <= 23:
+                raise ValueError(f"hour 必须在 0-23，收到 {h}")
+            if not 0 <= m <= 59:
+                raise ValueError(f"minute 必须在 0-59，收到 {m}")
+            return {"hour": h, "minute": m}
+
+        if name == "sync_board_time":
+            n = datetime.now()
+            return {"hour": n.hour, "minute": n.minute, "second": n.second}
+
         if name == "silence_alarm":
             return {}
 
@@ -323,7 +368,18 @@ class ToolExecutor:
 
         raise ValueError(f"未知控制命令：{name}")
 
-    async def _await_settled(self, command_id: str, timeout: float = 6.0):
+    async def _await_settled(self, command_id: str, timeout: float | None = None):
+        """等命令进入终态。
+
+        超时时长要覆盖设备层的完整重试预算，否则会出现"其实成功了，
+        但 AI 已经放弃等待、回复'尚未确认'"的情况 —— 实测就撞到过：
+        一条闹钟命令要下发两帧，赶上串口正忙于每秒报文，回执被跳过、
+        重发一次，总耗时超过原来写死的 6 秒。
+        乘 2 是因为一条上层命令最多拆成两帧（闹钟的时与分）。
+        """
+        if timeout is None:
+            st = get_settings()
+            timeout = st.command_timeout_s * (st.command_retries + 1) * 2 + 2.0
         cmd = self.device.commands[command_id]
         deadline = asyncio.get_running_loop().time() + timeout
         while cmd.status not in TERMINAL_STATUSES:

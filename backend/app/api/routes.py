@@ -176,6 +176,11 @@ class NearBody(BaseModel):
     cm: int = Field(..., ge=F.NEARCM_MIN, le=F.NEARCM_MAX)
 
 
+class AlarmBody(BaseModel):
+    hour: int = Field(..., ge=0, le=23)
+    minute: int = Field(..., ge=0, le=59)
+
+
 class SecurityBody(BaseModel):
     mode: Literal["arm", "disarm"]
 
@@ -210,6 +215,25 @@ async def control_threshold(body: ThresholdBody, request: Request):
 @router.post("/control/near-threshold")
 async def control_near(body: NearBody, request: Request):
     return await _submit(request, CommandName.SET_NEAR_THRESHOLD, {"cm": body.cm})
+
+
+@router.post("/control/alarm")
+async def control_alarm(body: AlarmBody, request: Request):
+    """闹钟是 NodeA 本机参数，不经过 485，从站不在线也能真正生效。"""
+    return await _submit(request, CommandName.SET_ALARM,
+                         {"hour": body.hour, "minute": body.minute})
+
+
+@router.post("/control/sync-time")
+async def control_sync_time(request: Request):
+    """把 PC 的当前时间下发给 NodeA 的 DS1302。
+
+    DS1302 靠纽扣电池独立走时，长期不校会与现实偏开，而闹钟和报文
+    时间戳都依赖它。只同步时分秒，日期不动。
+    """
+    now = datetime.now()
+    return await _submit(request, CommandName.SYNC_TIME,
+                         {"hour": now.hour, "minute": now.minute, "second": now.second})
 
 
 @router.post("/control/security")

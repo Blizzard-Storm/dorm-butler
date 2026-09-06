@@ -95,6 +95,11 @@ DIST_MIN, DIST_MAX = 2, 400
 CMD_LEN = 10
 CMD_HDR = 0xAA
 
+# 只在 PC <-> NodeA 之间使用的功能码，不上 485，故不在 protocol.h 里。
+# DS1302 靠纽扣电池独立走时，换过电池或长期不校就会与现实偏开，
+# 而闹钟和报文时间戳都依赖它，所以需要一条对时命令。
+FUNC_PC_SETTIME = 0x11
+
 # NodeA 的 Cfg[] 下标，与固件 main.c 里的 CFG_xxx 一一对应
 CFG_TEMPSET, CFG_ARM, CFG_ALMH, CFG_ALMM, CFG_NEARCM = 0, 1, 2, 3, 4
 CFG_N = 5
@@ -115,16 +120,22 @@ ACK_TEXT = {
 }
 
 
-def build_pc_command(seq: int, target: int, cfg_index: int, value: int,
-                     func: int = FUNC_SETCFG) -> bytes:
-    """组一帧 PC -> NodeA 的命令（含 CRC）。"""
+def build_pc_command(seq: int, target: int, arg0: int = 0, arg1: int = 0,
+                     func: int = FUNC_SETCFG, arg2: int = 0) -> bytes:
+    """组一帧 PC -> NodeA 的命令（含 CRC）。
+
+    参数含义随功能码变化：
+        FUNC_SETCFG      arg0=Cfg 下标, arg1=值
+        FUNC_PC_SETTIME  arg0=时, arg1=分, arg2=秒
+    """
     buf = bytearray(CMD_LEN)
     buf[0] = CMD_HDR
     buf[1] = seq & 0xFF
     buf[2] = target & 0xFF
     buf[3] = func & 0xFF
-    buf[4] = cfg_index & 0xFF
-    buf[5] = value & 0xFF
+    buf[4] = arg0 & 0xFF
+    buf[5] = arg1 & 0xFF
+    buf[6] = arg2 & 0xFF
     crc = crc16_modbus(bytes(buf[:CMD_LEN - 2]))
     buf[CMD_LEN - 2] = crc & 0x00FF
     buf[CMD_LEN - 1] = (crc >> 8) & 0x00FF

@@ -65,6 +65,28 @@ class CalReading:
     raw: str
 
 
+# 本机参数回报（NodeA 每秒一条）：
+#     CFG T=28 A=0 H=07 M=00 N=060
+# 这是【设备上的真实参数】。PC 侧原来只显示自己记得的值，用户拿摇杆
+# 在板子上改过之后网页并不知道，显示的是过期数据。有了这条就能以设备为准。
+_CFG_PATTERN = re.compile(
+    r"^CFG T=(?P<t>\d{2}) A=(?P<a>\d) H=(?P<h>\d{2}) M=(?P<m>\d{2}) N=(?P<n>\d{3})$"
+)
+
+
+@dataclass
+class BoardCfg:
+    """从设备读回来的参数，不是 PC 侧的记账。"""
+
+    received_at: datetime
+    temp_threshold: int
+    armed: bool
+    alarm_hour: int
+    alarm_minute: int
+    near_threshold: int
+    raw: str
+
+
 @dataclass
 class Ack:
     """一条下行命令的回执。"""
@@ -110,9 +132,11 @@ class ReportParser:
     lines_bad: int = 0
     cal_ok: int = 0
     ack_ok: int = 0
+    cfg_ok: int = 0
     bytes_dropped: int = 0
     last_bad_line: str = ""
     last_cal: CalReading | None = None
+    last_cfg: BoardCfg | None = None
     # 收到的回执依次放进这里，由设备层取走匹配在途请求
     acks: list[Ack] = field(default_factory=list)
 
@@ -152,6 +176,20 @@ class ReportParser:
                 detail=int(ack.group("detail")),
                 raw=text,
             ))
+            return None
+
+        cfg = _CFG_PATTERN.match(text)
+        if cfg is not None:
+            self.cfg_ok += 1
+            self.last_cfg = BoardCfg(
+                received_at=datetime.now(timezone.utc),
+                temp_threshold=int(cfg.group("t")),
+                armed=cfg.group("a") == "1",
+                alarm_hour=int(cfg.group("h")),
+                alarm_minute=int(cfg.group("m")),
+                near_threshold=int(cfg.group("n")),
+                raw=text,
+            )
             return None
 
         cal = _CAL_PATTERN.match(text)

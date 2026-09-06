@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .api.metrics import router as metrics_router
 from .api.routes import router as api_router
 from .api.ws import router as ws_router, wire_bus
 from .config import BASE_DIR, get_settings
@@ -52,7 +53,10 @@ def build_device() -> DeviceService:
 
 def restore_settings(device: DeviceService) -> None:
     """把上次保存的参数恢复到设备状态，满足"刷新后仍然保持"。"""
-    for key, attr in (("temp_threshold", "temp_threshold"), ("near_threshold", "near_threshold")):
+    for key, attr in (("temp_threshold", "temp_threshold"),
+                      ("near_threshold", "near_threshold"),
+                      ("alarm_hour", "alarm_hour"),
+                      ("alarm_minute", "alarm_minute")):
         raw = get_setting(key)
         if raw is None:
             continue
@@ -102,6 +106,8 @@ app.add_middleware(
 
 app.include_router(api_router)
 app.include_router(ws_router)
+# Prometheus 抓取端点。可选：不部署 Prometheus 也不影响任何功能
+app.include_router(metrics_router)
 
 
 @app.get("/api/health")
@@ -116,7 +122,7 @@ if FRONTEND_DIST.is_dir():
 
     @app.get("/{full_path:path}")
     async def spa(full_path: str):
-        if full_path.startswith(("api", "ws")):
+        if full_path.startswith(("api", "ws", "metrics")):
             return JSONResponse({"detail": {"code": "not_found", "message": "接口不存在"}},
                                 status_code=404)
         index = FRONTEND_DIST / "index.html"

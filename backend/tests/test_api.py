@@ -196,3 +196,38 @@ def test_ai_command_persists_through_same_path(client):
         "sent_at": None, "settled_at": None, "attempts": 1, "error": None,
     })
     assert get_setting("near_threshold") == "90"
+
+
+def test_metrics_endpoint_prometheus_format(client):
+    """/metrics 要能被 Prometheus 解析，且拿不到的读数不能输出成 0。"""
+    r = client.get("/metrics")
+    assert r.status_code == 200
+    assert "text/plain" in r.headers["content-type"]
+    body = r.text
+
+    # 每个指标都要有 HELP/TYPE 声明
+    assert "# HELP dorm_temperature_celsius" in body
+    assert "# TYPE dorm_bus_crc_errors_total counter" in body
+    assert "# TYPE dorm_node_up gauge" in body
+
+    # 带标签的指标
+    assert 'dorm_node_up{node="A"}' in body
+    assert 'dorm_commands_total{status="confirmed"}' in body
+
+    # 计数器命名约定
+    # "# TYPE dorm_xxx counter" -> 指标名在第 3 段
+    for line in body.splitlines():
+        if line.startswith("# TYPE") and line.endswith("counter"):
+            assert line.split()[2].endswith("_total"), f"计数器必须以 _total 结尾: {line}"
+
+
+def test_metrics_omits_unknown_readings_instead_of_zero(client):
+    """节点离线时该指标必须【不出现】，而不是输出 0 ——
+    在 Prometheus 里"没有数据点"和"值为 0"是两回事，后者会污染均值和告警。"""
+    client.post("/api/mock/node-offline", json={"node": "B", "offline": True})
+    body = client.get("/metrics").text
+    values = [l for l in body.splitlines()
+              if l.startswith("dorm_temperature_celsius")]
+    assert values == [], f"节点B 离线时不该输出温度值，实际: {values}"
+    assert "# HELP dorm_temperature_celsius" in body      # 声明还在，只是没有数据点
+    client.post("/api/mock/node-offline", json={"node": "B", "offline": False})

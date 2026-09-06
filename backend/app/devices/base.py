@@ -45,6 +45,8 @@ class CommandName(StrEnum):
     SILENCE_ALARM = "silence_alarm"
     SET_WINDOW = "set_window"
     SET_NEAR_THRESHOLD = "set_near_threshold"
+    SET_ALARM = "set_alarm"
+    SYNC_TIME = "sync_time"
 
 
 @dataclass
@@ -141,6 +143,8 @@ class SystemState:
     # 参数
     temp_threshold: int = 28
     near_threshold: int = 60
+    alarm_hour: int = 7                 # NodeA 本机闹钟，不经过 485
+    alarm_minute: int = 0
 
     # 诊断
     crc_errors: int = 0
@@ -191,6 +195,8 @@ class SystemState:
                 "temp_threshold": self.temp_threshold,
                 "near_threshold": self.near_threshold,
                 "fan_mode": self.fan_mode,
+                "alarm_hour": self.alarm_hour,
+                "alarm_minute": self.alarm_minute,
             },
             "diagnostics": {
                 "crc_errors": self.crc_errors,

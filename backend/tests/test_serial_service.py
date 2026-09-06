@@ -118,13 +118,38 @@ def test_commands_without_firmware_path_are_unsupported(svc, name):
 def test_supported_commands_build_correct_frame(svc, name, params, cfg_index, value):
     """有下发通路的命令要能正确翻译成 Cfg 下标与值。"""
     node, plan = _plan_command(name, params)
-    assert plan == (cfg_index, value)
+    assert plan == [(F.FUNC_SETCFG, cfg_index, value, 0)]
     assert node in ("B", "C")
+
+
+def test_alarm_is_a_two_step_local_command():
+    """闹钟要分时、分两帧下发，且目标是 NodeA 本机（不经 485，不怕从站离线）。"""
+    node, plan = _plan_command(CommandName.SET_ALARM, {"hour": 7, "minute": 30})
+    assert node == "A"
+    assert plan == [(F.FUNC_SETCFG, F.CFG_ALMH, 7, 0),
+                    (F.FUNC_SETCFG, F.CFG_ALMM, 30, 0)]
+
+
+def test_sync_time_uses_its_own_function_code():
+    """对时走 FUNC_PC_SETTIME，时分秒装在一帧里，且目标是 NodeA 本机。"""
+    node, plan = _plan_command(CommandName.SYNC_TIME,
+                               {"hour": 11, "minute": 53, "second": 7})
+    assert node == "A"
+    assert plan == [(F.FUNC_PC_SETTIME, 11, 53, 7)]
+
+
+def test_settime_frame_carries_hms():
+    frame = F.build_pc_command(seq=9, target=F.ADDR_MASTER, arg0=11, arg1=53,
+                               func=F.FUNC_PC_SETTIME, arg2=7)
+    assert frame[3] == F.FUNC_PC_SETTIME
+    assert (frame[4], frame[5], frame[6]) == (11, 53, 7)
+    crc = crc16_modbus(frame[:-2])
+    assert frame[-2] == crc & 0xFF and frame[-1] == crc >> 8
 
 
 def test_command_frame_shape_and_crc():
     frame = F.build_pc_command(seq=7, target=F.ADDR_MASTER,
-                               cfg_index=F.CFG_TEMPSET, value=26)
+                               arg0=F.CFG_TEMPSET, arg1=26)
     assert len(frame) == F.CMD_LEN
     assert frame[0] == F.CMD_HDR
     assert frame[1] == 7 and frame[3] == F.FUNC_SETCFG

@@ -81,6 +81,8 @@ class MockDeviceService(DeviceService):
             CommandName.SET_SECURITY_MODE: Capability(True),
             CommandName.SILENCE_ALARM: Capability(True),
             CommandName.SET_NEAR_THRESHOLD: Capability(True),
+            CommandName.SET_ALARM: Capability(True),
+            CommandName.SYNC_TIME: Capability(True),
             # 固件里通风窗只由 NodeB 本地温度闭环驱动，没有下发通道。
             # 模拟层不给它开后门，否则接真硬件时页面要返工。
             CommandName.SET_WINDOW: Capability(
@@ -334,6 +336,19 @@ class MockDeviceService(DeviceService):
             else:
                 raise ValueError(f"未知布防模式：{mode}")
 
+        elif cmd.name == CommandName.SET_ALARM:
+            h, m = int(p["hour"]), int(p["minute"])
+            if not 0 <= h <= 23:
+                raise ValueError(f"闹钟小时越界：{h}，允许 0-23")
+            if not 0 <= m <= 59:
+                raise ValueError(f"闹钟分钟越界：{m}，允许 0-59")
+            self.state.alarm_hour, self.state.alarm_minute = h, m
+
+        elif cmd.name == CommandName.SYNC_TIME:
+            # 模拟层没有 DS1302，板上时间本来就取的是 PC 时间，对时是个空操作。
+            # 但仍然走完整条命令链路，这样前端和 AI 的行为与真机一致。
+            pass
+
         elif cmd.name == CommandName.SILENCE_ALARM:
             self._silenced = True
             self._emit_event("security", "info", "报警已静音（安防状态保持）")
@@ -439,4 +454,6 @@ def _target_of(name: str) -> str:
         CommandName.SET_SECURITY_MODE: "C",
         CommandName.SILENCE_ALARM: "C",
         CommandName.SET_NEAR_THRESHOLD: "C",
+        CommandName.SET_ALARM: "A",
+        CommandName.SYNC_TIME: "A",
     }.get(name, "-")

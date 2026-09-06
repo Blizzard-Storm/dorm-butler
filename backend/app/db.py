@@ -20,6 +20,8 @@ _SETTING_OF_COMMAND = {
     str(CommandName.SET_TEMP_THRESHOLD): "temp_threshold",
     str(CommandName.SET_NEAR_THRESHOLD): "near_threshold",
 }
+# 闹钟一条命令带两个值，单独处理
+_ALARM_KEYS = {"hour": "alarm_hour", "minute": "alarm_minute"}
 
 log = logging.getLogger(__name__)
 
@@ -177,6 +179,12 @@ class Recorder:
         # 会变成"上一次请求的值"，那是在骗人。
         # REST 和 AI 两条下发路径都经过这里，行为一致。
         if p.get("status") == str(CommandStatus.CONFIRMED):
+            if p.get("name") == str(CommandName.SET_ALARM):
+                for src, key in _ALARM_KEYS.items():
+                    v = (p.get("params") or {}).get(src)
+                    if isinstance(v, int):
+                        set_setting(key, str(v))
+                return
             key = _SETTING_OF_COMMAND.get(p.get("name", ""))
             if key:
                 params = p.get("params") or {}
