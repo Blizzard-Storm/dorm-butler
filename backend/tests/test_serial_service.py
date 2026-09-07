@@ -271,6 +271,44 @@ def test_watchdog_marks_node_a_offline(svc):
     assert s.temp_c is None            # 掉线后不能停在旧数据上
 
 
+def test_disconnect_keeps_settings_and_counters(svc):
+    """断线只作废实时读数，不能把设置和累计计数一起抹掉。
+
+    温度阈值、接近阈值、闹钟是设备参数，断线期间并不会改变；
+    CRC 错误数、收帧数是累计量，清零会让诊断页看不出断线前发生过什么。
+    """
+    async def scenario():
+        await afeed(svc, b"CFG T=26 A=1 H=06 M=30 N=080\r\n")
+        await afeed(svc, b"[21:30:10] T+235 L2 F040 D120 A2 O11 E000\r\n")
+        await svc._on_disconnect("device removed")
+
+    asyncio.run(scenario())
+    s = svc.state
+    assert (s.temp_threshold, s.near_threshold) == (26, 80)
+    assert (s.alarm_hour, s.alarm_minute) == (6, 30)
+    assert s.frames_ok > 0
+    assert s.capabilities[CommandName.SET_TEMP_THRESHOLD].supported is True
+
+
+def test_reconnect_restores_readings_after_disconnect(svc):
+    """重连后第一帧报文就要让状态恢复，不能一直卡在未知。"""
+    async def scenario():
+        await afeed(svc, b"[21:30:10] T+235 L2 F040 D120 A2 O11 E000\r\n")
+        await svc._on_disconnect("device removed")
+        assert svc.state.temp_c is None          # 断线时确实清空了
+        await svc._on_connect()
+        await afeed(svc, b"[21:30:10] T+235 L2 F040 D120 A2 O11 E000\r\n")
+
+    asyncio.run(scenario())
+    s = svc.state
+    assert s.link_connected is True
+    assert s.node_a.online and s.node_b.online and s.node_c.online
+    assert s.temp_c == 23.5
+    assert s.fan_duty == 40
+    assert s.distance_cm == 120
+    assert s.board_time == "21:30:10"
+
+
 def test_serial_disconnect_immediately_invalidates_all_readings(svc):
     """物理拔掉 USB 后不能等待 watchdog，也不能保留任何旧物理量。"""
     async def scenario():
