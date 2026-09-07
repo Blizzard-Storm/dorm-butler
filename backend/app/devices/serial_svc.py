@@ -167,11 +167,27 @@ class SerialDeviceService(DeviceService):
 
     async def _on_disconnect(self, err: str) -> None:
         self.state.link_connected = False
-        self.state.node_a.online = False
-        self.state.node_b.online = False
-        self.state.node_c.online = False
+        self._invalidate_all_nodes()
         await bus.publish(TOPIC_EVENT, _event("link", "warning", f"串口断开：{err}，正在重连"))
         await self._push_state()
+
+    def _invalidate_all_nodes(self) -> None:
+        """作废链路断开后所有不再可信的实时状态。"""
+        s = self.state
+        s.node_a.online = s.node_b.online = s.node_c.online = False
+        s.board_time = None
+        s.temp_c = s.lux_level = s.lux_adc = s.temp_adc = s.fan_duty = None
+        s.temp_saturated = False
+        s.distance_cm = s.alarm_level = None
+        s.distance_valid = False
+        s.door_state = s.security_state = s.lock_state = None
+        s.window_state = s.window_mode = s.fan_mode = None
+        s.vib_count = s.door_count = None
+        s.silenced = None
+        s.near = s.temp_high = None
+        s.main_loops = None
+        s.master_reply_miss_b = s.master_reply_miss_c = None
+        s.node_a.poll_miss = s.node_b.poll_miss = s.node_c.poll_miss = None
 
     async def _on_report(self, r: Report) -> None:
         s = self.state
@@ -329,22 +345,7 @@ class SerialDeviceService(DeviceService):
                 or (now() - s.last_frame_at) > timedelta(seconds=NODE_A_TIMEOUT_S)
             )
             if stale and s.node_a.online:
-                s.node_a.online = False
-                s.node_b.online = False
-                s.node_c.online = False
-                s.temp_c = s.lux_level = s.fan_duty = None
-                s.distance_cm = s.alarm_level = None
-                s.distance_valid = False
-                s.door_state = s.security_state = s.lock_state = None
-                s.window_state = None
-                s.window_mode = None
-                s.fan_mode = None
-                s.vib_count = s.door_count = None
-                s.silenced = None
-                s.near = s.temp_high = None
-                s.main_loops = None
-                s.master_reply_miss_b = s.master_reply_miss_c = None
-                s.node_a.poll_miss = s.node_b.poll_miss = s.node_c.poll_miss = None
+                self._invalidate_all_nodes()
                 await bus.publish(TOPIC_EVENT, _event(
                     "node", "warning", f"NodeA 超过 {NODE_A_TIMEOUT_S:.0f} 秒无上报，判为离线", node="A"))
                 await self._push_state()

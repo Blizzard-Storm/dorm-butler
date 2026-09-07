@@ -361,6 +361,11 @@
               <FileType>4</FileType>
               <FilePath>.\source\STCBSP_V3.6.LIB</FilePath>
             </File>
+            <File>
+              <FileName>STARTUP.A51</FileName>
+              <FileType>2</FileType>
+              <FilePath>..\common\STARTUP.A51</FilePath>
+            </File>
           </Files>
         </Group>
       </Groups>

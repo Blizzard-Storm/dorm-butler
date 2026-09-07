@@ -11,7 +11,26 @@ if ! command -v gcc >/dev/null 2>&1; then
 fi
 
 cp ../NodeA_主控网关/inc/protocol.h inc/ 2>/dev/null || true
-echo "=== 1. 三个 main.c 语法检查 ==="
+echo "=== 1. Keil XDATA 启动配置检查 ==="
+startup=../common/STARTUP.A51
+if ! grep -Eq '^[[:space:]]*XDATALEN[[:space:]]+EQU[[:space:]]+0700H' "$startup"; then
+  echo "错误：STARTUP.A51 未把 XDATALEN 配成 0700H。"
+  exit 1
+fi
+for project in ../NodeA_主控网关/NodeA.uvproj ../NodeB_环境节点/NodeB.uvproj ../NodeC_安防节点/NodeC.uvproj; do
+  if ! grep -Fq '..\common\STARTUP.A51' "$project"; then
+    echo "错误：$project 未引用统一的 STARTUP.A51。"
+    exit 1
+  fi
+  if ! grep -Fq 'XRAM(0-0x6FF)' "$project"; then
+    echo "错误：$project 的 XRAM 范围不再是 0000H-06FFH，请同步检查 XDATALEN。"
+    exit 1
+  fi
+done
+echo "三个 Keil 工程均在 C main() 前清零 XDATA 0000H-06FFH。"
+echo
+
+echo "=== 2. 三个 main.c 语法检查 ==="
 fail=0
 for f in mainA mainB mainC; do
   printf "%-10s" "$f.c"
@@ -28,6 +47,6 @@ for f in mainA mainB mainC; do
 done
 [ "$fail" -eq 0 ] || exit 1
 echo
-echo "=== 2. 协议与查表自测 ==="
+echo "=== 3. 协议与查表自测 ==="
 gcc -std=gnu89 -O1 -I inc -I . -o test.exe test.c -lm
 ./test.exe

@@ -269,3 +269,22 @@ def test_watchdog_marks_node_a_offline(svc):
     assert s.node_a.online is False
     assert s.node_b.online is False
     assert s.temp_c is None            # 掉线后不能停在旧数据上
+
+
+def test_serial_disconnect_immediately_invalidates_all_readings(svc):
+    """物理拔掉 USB 后不能等待 watchdog，也不能保留任何旧物理量。"""
+    async def scenario():
+        await afeed(svc, b"[21:30:10] T+235 L2 F040 D120 A2 O11 E000\r\n")
+        svc.state.lux_adc = 612
+        svc.state.temp_adc = 523
+        svc.state.fan_mode = "manual"
+        await svc._on_disconnect("device removed")
+
+    asyncio.run(scenario())
+    s = svc.state
+    assert s.link_connected is False
+    assert not s.node_a.online and not s.node_b.online and not s.node_c.online
+    assert s.temp_c is None and s.lux_level is None and s.fan_duty is None
+    assert s.lux_adc is None and s.temp_adc is None
+    assert s.distance_cm is None and s.alarm_level is None
+    assert s.fan_mode is None and s.distance_valid is False
