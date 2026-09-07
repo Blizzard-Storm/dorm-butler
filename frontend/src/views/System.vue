@@ -16,6 +16,7 @@ const isMock = computed(() => s.value?.link.mode === 'mock')
 const faultRate = ref(0)
 const bOffline = ref(false)
 const cOffline = ref(false)
+const serialToggling = ref(false)
 
 async function load() {
   info.value = await api.systemInfo()
@@ -36,6 +37,18 @@ async function toggleOffline(node: 'B' | 'C', off: boolean) {
   await api.mockOffline(node, off)
 }
 
+async function toggleSerial() {
+  serialToggling.value = true
+  try {
+    const r = s.value?.link.paused ? await api.serialResume() : await api.serialPause()
+    message.info(r.message)
+  } catch (e) {
+    message.error('操作失败，串口状态可能没有改变，请看诊断信息')
+  } finally {
+    serialToggling.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -53,8 +66,9 @@ onMounted(load)
           <span class="mono">{{ info?.configured_port }} @ {{ info?.configured_baud }} 8N1</span>
         </NDescriptionsItem>
         <NDescriptionsItem label="链路状态">
-          <NTag :type="s?.link.connected ? 'success' : 'error'" size="small" round>
-            {{ s?.link.connected ? '已连接' : '未连接' }}
+          <NTag :type="s?.link.paused ? 'warning' : (s?.link.connected ? 'success' : 'error')"
+                size="small" round>
+            {{ s?.link.paused ? '已暂停（烧录中）' : (s?.link.connected ? '已连接' : '未连接') }}
           </NTag>
           <span class="dim">　最后收帧 {{ relTime(s?.link.last_frame_at) }}</span>
         </NDescriptionsItem>
@@ -75,6 +89,14 @@ onMounted(load)
 
       <div class="acts">
         <NButton size="small" @click="load">刷新</NButton>
+        <NButton v-if="!isMock" size="small" :type="s?.link.paused ? 'primary' : 'default'"
+                 :loading="serialToggling" @click="toggleSerial">
+          {{ s?.link.paused ? '恢复串口' : '暂停串口（烧录前点这个）' }}
+        </NButton>
+      </div>
+      <div v-if="!isMock" class="tip">
+        要用 STC-ISP 烧录板子时，先点上面「暂停串口」——串口独占，STC-ISP
+        和后端不能同时打开同一个口。烧完点「恢复串口」，网页全程不用刷新、不用重启后端。
       </div>
     </NCard>
 

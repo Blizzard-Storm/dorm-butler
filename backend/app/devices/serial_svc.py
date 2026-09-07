@@ -64,6 +64,10 @@ class SerialDeviceService(DeviceService):
         self._write_lock = threading.Lock()
         self._command_lock = asyncio.Lock()
 
+        # 手动暂停（例如烧录前）与串口异常断开是两回事：前者是操作者主动要求，
+        # 页面不该把它当成故障去告警。只有 pause()/resume() 会改这个标志。
+        self.paused = False
+
         s = self.state
         s.mode = self.mode
         s.temp_threshold = F.DEF_TEMPSET
@@ -102,6 +106,28 @@ class SerialDeviceService(DeviceService):
         if self._serial and self._serial.is_open:
             self._serial.close()
         self.state.link_connected = False
+
+    async def pause(self, reason: str = "烧录") -> None:
+        """主动放开串口，给 STC-ISP 之类需要独占端口的工具让路。
+
+        Windows 上一个 COM 口同一时间只能被一个进程打开，这是操作系统的限制，
+        不是 bug——之前的做法是整个杀掉后端进程，代价是前端也跟着掉线，
+        烧完还要手动重启后端。这里只关掉串口本身，FastAPI 进程、WebSocket、
+        前端页面全程不受影响，烧完调 resume() 就能自动接回来。
+        """
+        await self.stop()
+        self.paused = True
+        self._invalidate_all_nodes()
+        await bus.publish(TOPIC_EVENT, _event(
+            "link", "info", f"串口已暂停（{reason}），网页仍可正常使用，烧录完成后点击恢复"))
+        await self._push_state()
+
+    async def resume(self) -> None:
+        """从 pause() 恢复，重新打开串口并继续常规的读取与自动重连。"""
+        self.paused = False
+        await self.start()
+        await bus.publish(TOPIC_EVENT, _event("link", "info", "串口已恢复，正在重新连接"))
+        await self._push_state()
 
     # ------------------------------------------------------------------ 串口读取线程
 
@@ -355,6 +381,7 @@ class SerialDeviceService(DeviceService):
             "port": self.port,
             "baud": self.baud,
             "readonly": False,
+            "paused": self.paused,
             "inflight": len(self._inflight),
             "acks": self.parser.ack_ok,
             "frames_ok": self.parser.lines_ok,

@@ -87,6 +87,9 @@ export const api = {
     post('/api/mock/node-offline', { node, offline }),
   mockFaultRate: (rate: number) => post('/api/mock/fault-rate', { command_fail_rate: rate }),
 
+  serialPause: () => post<{ ok: boolean; paused: boolean; message: string }>('/api/serial/pause'),
+  serialResume: () => post<{ ok: boolean; paused: boolean; message: string }>('/api/serial/resume'),
+
   aiChat: (messages: { role: string; content: string }[], confirmedTool?: unknown) =>
     post<ChatReply>('/api/ai/chat', { messages, confirmed_tool: confirmedTool ?? null }),
 }

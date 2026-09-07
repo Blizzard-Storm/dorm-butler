@@ -107,6 +107,71 @@ def test_fan_mode_goes_unknown_when_node_b_drops(svc):
     assert s.window_state is None
 
 
+def test_pause_releases_port_without_losing_settings(svc, monkeypatch):
+    """pause() 要真正放开串口（给 STC-ISP 让路），但不能把用户设置也带着清掉，
+    resume() 之后要能重新接上。这里用一个假串口类，不需要真硬件。
+    """
+    opened = {"count": 0}
+
+    class FakeSerial:
+        def __init__(self, *a, **kw):
+            opened["count"] += 1
+            self.is_open = True
+
+        def close(self):
+            self.is_open = False
+
+        @property
+        def in_waiting(self):
+            return 0
+
+        def read(self, n):
+            return b""
+
+    monkeypatch.setattr("app.devices.serial_svc.serial.Serial", FakeSerial)
+
+    async def scenario():
+        # CFG 行本身不产出 Report，必须紧跟一行主报文才会被 _on_report 采纳
+        await afeed(svc, b"CFG T=26 A=1 H=06 M=30 N=080\r\n")
+        await afeed(svc, b"[21:30:10] T+235 L2 F040 D120 A2 O11 E000\r\n")
+        await svc.start()
+        # 给读取线程一点时间真正打开一次串口
+        for _ in range(20):
+            if opened["count"] > 0:
+                break
+            await asyncio.sleep(0.05)
+        await svc.pause()
+
+    asyncio.run(scenario())
+
+    assert opened["count"] >= 1
+    assert svc.paused is True
+    assert svc._serial is None or svc._serial.is_open is False
+    s = svc.state
+    # 暂停期间串口是断的，读数不可信，必须清掉——不能让页面停在烧录前的旧值上
+    assert s.temp_c is None and s.fan_duty is None
+    assert not s.node_a.online
+    # 但清的是读数，不是设置
+    assert (s.temp_threshold, s.near_threshold) == (26, 80)
+    assert (s.alarm_hour, s.alarm_minute) == (6, 30)
+    assert s.link_detail["paused"] is True
+
+    before = opened["count"]
+
+    async def resume_and_feed():
+        await svc.resume()
+        for _ in range(20):
+            if opened["count"] > before:
+                break
+            await asyncio.sleep(0.05)
+
+    asyncio.run(resume_and_feed())
+    assert svc.paused is False
+    assert opened["count"] > before          # resume 后真的重新打开了串口
+
+    asyncio.run(svc.stop())
+
+
 def test_offline_slave_invalidates_readings(svc):
     feed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
     assert svc.state.temp_c == 23.5

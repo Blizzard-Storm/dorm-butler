@@ -236,3 +236,16 @@ def test_metrics_omits_unknown_readings_instead_of_zero(client):
     assert values == [], f"节点B 离线时不该输出温度值，实际: {values}"
     assert "# HELP dorm_temperature_celsius" in body      # 声明还在，只是没有数据点
     client.post("/api/mock/node-offline", json={"node": "B", "offline": False})
+
+
+def test_serial_pause_is_a_safe_noop_in_mock_mode(client):
+    """模拟模式没有真实串口可放，接口要如实说明，不能报错也不能假装暂停了。"""
+    r = client.post("/api/serial/pause")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["paused"] is False
+
+    r = client.post("/api/serial/resume")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True

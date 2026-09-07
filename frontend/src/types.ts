@@ -23,6 +23,7 @@ export interface SystemState {
     baud?: number
     readonly?: boolean
     readonly_reason?: string
+    paused?: boolean
     simulated?: boolean
     frames_ok?: number
     frames_bad?: number

@@ -17,7 +17,7 @@ from ..config import get_settings
 from ..db import all_settings, session_scope
 from ..devices.base import CommandName
 from ..devices.mock import MockDeviceService
-from ..devices.serial_svc import list_serial_ports
+from ..devices.serial_svc import SerialDeviceService, list_serial_ports
 from ..models import CommandRecord, Event, Telemetry
 from ..protocol import frames as F
 
@@ -59,6 +59,30 @@ async def system_info(request: Request):
         "telemetry_period_s": s.telemetry_period_s,
         "capabilities": {k: v.__dict__ for k, v in device.snapshot().capabilities.items()},
     }
+
+
+@router.post("/serial/pause")
+async def serial_pause(request: Request):
+    """烧录前调用：主动放开串口，给 STC-ISP 让路。
+
+    只关串口本身，FastAPI 进程、WebSocket、网页全程不受影响——
+    不必再像以前那样整个杀掉后端。模拟模式下这是个安全的空操作。
+    """
+    device = _device(request)
+    if not isinstance(device, SerialDeviceService):
+        return {"ok": True, "paused": False, "message": "当前是模拟模式，没有真实串口需要释放"}
+    await device.pause()
+    return {"ok": True, "paused": True, "message": "串口已释放，可以烧录了"}
+
+
+@router.post("/serial/resume")
+async def serial_resume(request: Request):
+    """烧录完成后调用：重新打开串口，恢复正常读取与自动重连。"""
+    device = _device(request)
+    if not isinstance(device, SerialDeviceService):
+        return {"ok": True, "paused": False, "message": "当前是模拟模式，无需恢复"}
+    await device.resume()
+    return {"ok": True, "paused": False, "message": "串口已恢复，正在重新连接"}
 
 
 # ====================================================================== 历史与记录
