@@ -2,7 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0backend"
 if not exist "..\.venv\Scripts\python.exe" (
-  echo [!] 找不到虚拟环境，请先运行：python -m venv .venv 并安装 backend\requirements.txt
+  echo [!] 找不到虚拟环境，请先双击项目根目录的 setup.cmd（它会用 py -3 建好 .venv 并装依赖）
   pause & exit /b 1
 )
 if not exist ".env" copy ".env.example" ".env" >nul
