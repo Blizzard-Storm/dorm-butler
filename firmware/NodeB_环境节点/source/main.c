@@ -81,7 +81,7 @@ code char decode_table[] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f
      enumStepMotor1 —— SM 口上的真实步进电机（借到实物时用这个）
      enumStepMotor3 —— 用 L4~L7 四个 LED 模拟一台四相步进电机（借不到时的替代预案）
    选 enumStepMotor3 而不是 enumStepMotor2，是为了把 L0~L3 留给状态指示灯       */
-#define WINDOW_MOTOR        enumStepMotor3
+#define WINDOW_MOTOR        enumStepMotor1
 
 #define WINDOW_SPEED        20          /* 步进速度 步/秒 */
 #define WINDOW_STEPS        64          /* 开窗 / 关窗各转多少步 */
@@ -414,12 +414,23 @@ void Refresh()
 
 	switch(Page)
 	{
-	case 0:      /* 运行页：  -23.5 _ 040    左四位温度，右三位风扇占空比 */
+	case 0:      /* 运行页：正温时 23.5 28.040 = 温度 / 阈值 / PWM；负温时沿用旧布局 */
 		t = Temp10;
-		if(t < 0) { D[0] = 12; t = -t; }     /* 负号用 12 号字型（中横） */
-		if(t > 999) t = 999;                 /* 最多显示 99.9 */
-		NumI(1, (unsigned int)t, 3);
-		D[2] = (char)(D[2] + 16);            /* +16 = 这一位带小数点 */
+		if(t < 0)
+		{
+			D[0] = 12; t = -t;                 /* 负号用 12 号字型（中横） */
+			if(t > 999) t = 999;
+			NumI(1, (unsigned int)t, 3);
+			D[2] = (char)(D[2] + 16);
+		}
+		else
+		{
+			if(t > 999) t = 999;
+			NumI(0, (unsigned int)t, 3);       /* 23.5 */
+			D[1] = (char)(D[1] + 16);
+			NumC(3, CfgTempSet, 2);            /* 28. 末尾小数点作为分隔符 */
+			D[4] = (char)(D[4] + 16);
+		}
 		NumC(5, FanDuty, 3);
 		break;
 
@@ -623,9 +634,29 @@ void myKey_callback()
 	}
 }
 
-/* 摇杆：上下调温度阈值。单板阶段(L1)自测用，联网后主站下发的值会覆盖它 */
+/* 摇杆：上下调温度阈值；左右手动关/开窗；中键回到自动模式。 */
 void myNav_callback()
 {
+	if(GetAdcNavAct(enumAdcNavKeyRight) == enumKeyPress)  /* 右：手动开窗 */
+	{
+		WinManual = 1;
+		if(WinOpen == 0 && GetStepMotorStatus(WINDOW_MOTOR) != enumStepMotorBusy)
+		{
+			if(SetStepMotor(WINDOW_MOTOR, WINDOW_SPEED, WINDOW_STEPS) == enumSetStepMotorOK)
+				WinOpen = 1;
+		}
+		SetBeep(3000, 3);
+	}
+	if(GetAdcNavAct(enumAdcNavKeyLeft) == enumKeyPress)   /* 左：手动关窗 */
+	{
+		WinManual = 1;
+		if(WinOpen == 1 && GetStepMotorStatus(WINDOW_MOTOR) != enumStepMotorBusy)
+		{
+			if(SetStepMotor(WINDOW_MOTOR, WINDOW_SPEED, -WINDOW_STEPS) == enumSetStepMotorOK)
+				WinOpen = 0;
+		}
+		SetBeep(2000, 3);
+	}
 	if(GetAdcNavAct(enumAdcNavKeyUp) == enumKeyPress)
 	{
 		if(CfgTempSet < 40) CfgTempSet++;
@@ -638,7 +669,9 @@ void myNav_callback()
 	}
 	if(GetAdcNavAct(enumAdcNavKeyCenter) == enumKeyPress)
 	{
-		Page = 0;                            /* 摇杆中键回到运行页 */
+		Page = 0;
+		WinManual = 0;                       /* 摇杆中键回到运行页和温控自动模式 */
+		SetBeep(4000, 3);
 	}
 }
 
@@ -727,8 +760,8 @@ void main()
  *
  * L2 接执行器
  *   6. EXT 接直流电机，重复第 4、5 步，电机应随占空比变化改变转速。
- *   7. WINDOW_MOTOR 保持 enumStepMotor3 时，把阈值调低到触发开窗条件，
- *      L4~L7 应依次点亮走一圈（LED 模拟四相步进电机）。借到实物后改成 enumStepMotor1 重测。
+ *   7. WINDOW_MOTOR 设为 enumStepMotor1 时，断电接好 SM 口步进电机再上电。
+ *      摇杆右手动开窗、左手动关窗、中键恢复温控自动；自动开窗条件仍是高于阈值 3 摄氏度。
  *
  * L3 接总线
  *   8. 与节点A 用 485 对接（A-A、B-B、GND-GND），主站轮询后通信页的收到帧数应持续增长、
