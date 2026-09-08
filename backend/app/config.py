@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
     llm_timeout_s: float = 30.0
+    # False 可绕开错误的校园网/系统代理；需要 HTTP(S)_PROXY 时可显式开启。
+    llm_trust_env: bool = False
 
     @property
     def llm_enabled(self) -> bool:

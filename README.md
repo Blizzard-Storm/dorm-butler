@@ -573,6 +573,8 @@ SQLite，默认 `backend/data/dorm.db`，**首次启动自动建表**，无需�
 
 在 `backend/.env` 填 `LLM_API_KEY` 后可用（任何兼容 OpenAI function calling 的服务）。
 **不配也不影响其它功能**，AI 页会显示"未配置"。
+默认 `LLM_TRUST_ENV=false`，避免错误的校园网/系统代理中断 HTTPS；如果你的网络必须
+通过 `HTTP_PROXY`/`HTTPS_PROXY` 访问模型服务，再把它改为 `true`。
 
 详见 [`docs/LLM工具定义说明.md`](docs/LLM工具定义说明.md)。要点：
 
@@ -594,7 +596,7 @@ SQLite，默认 `backend/data/dorm.db`，**首次启动自动建表**，无需�
 ```
 （在 `backend/` 目录下执行）
 
-**68 个测试**，覆盖 CRC16 已知向量与单比特翻转检出、16 位整数往返、
+**87 个测试**，覆盖 CRC16 已知向量与单比特翻转检出、16 位整数往返、
 485 帧编解码、文本报文解析（粘包/拆包/噪声重同步/离线作废/无效距离）、
 详细状态与性能报文、命令生命周期与回执匹配、值域拒绝、
 关键 REST 接口、WebSocket 推送、

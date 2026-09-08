@@ -46,6 +46,7 @@ firmware/**/*.dep
 
 # 本地临时备份
 *.zip
+*.before-*
 
 # 测试文件夹
 log/

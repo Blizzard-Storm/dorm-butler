@@ -7,6 +7,7 @@
 
 $ErrorActionPreference = 'Stop'
 $url = 'http://127.0.0.1:8000/api/serial/pause'
+$project = Split-Path -Parent $PSScriptRoot
 
 Write-Host ""
 Write-Host "  ============================================"
@@ -22,7 +23,10 @@ try {
     Write-Host "  没能连上后端接口（后端可能没在跑，或监听的不是 8000 端口）。"
     Write-Host "  退而求其次：直接停掉整个后端进程，让串口空出来。"
     $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-        Where-Object { $_.CommandLine -like '*uvicorn*' }
+        Where-Object {
+            $_.CommandLine -like '*uvicorn*' -and
+            $_.CommandLine -match [regex]::Escape($project)
+        }
     if ($procs) {
         $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         Write-Host "  已停止 $($procs.Count) 个后端进程，烧完后需要重新运行 start-backend.cmd。"
