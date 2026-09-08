@@ -26,6 +26,7 @@ from ..protocol import frames as F
 CONTROL_TOOLS = {
     CommandName.SET_FAN,
     CommandName.SET_TEMP_THRESHOLD,
+    CommandName.SET_NEAR_THRESHOLD,
     CommandName.SET_SECURITY_MODE,
     CommandName.SILENCE_ALARM,
     CommandName.SET_WINDOW,
@@ -122,6 +123,23 @@ def tool_schemas() -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "set_near_threshold",
+                "description": f"设置 NodeC 超声波接近提示阈值，允许 {F.NEARCM_MIN}-{F.NEARCM_MAX} 厘米。"
+                               "测得距离小于或等于该值时触发接近提示；这不是正式入侵报警。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "cm": {"type": "integer",
+                               "minimum": F.NEARCM_MIN, "maximum": F.NEARCM_MAX},
+                    },
+                    "required": ["cm"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "set_security_mode",
                 "description": "布防或撤防。这是敏感操作，必须由用户在界面上二次确认后才会真正执行。",
                 "parameters": {
@@ -197,7 +215,8 @@ class ToolExecutor:
                 return self._history(args)
             if name == "get_alarm_events":
                 return self._events(args)
-            if name in {"set_fan", "set_temperature_threshold", "set_security_mode",
+            if name in {"set_fan", "set_temperature_threshold", "set_near_threshold",
+                        "set_security_mode",
                         "silence_alarm", "set_window", "set_alarm_time", "sync_board_time"}:
                 return await self._control(name, args, confirmed)
             return {"ok": False, "error": f"未知工具：{name}"}
@@ -338,6 +357,12 @@ class ToolExecutor:
             if not F.TEMPSET_MIN <= v <= F.TEMPSET_MAX:
                 raise ValueError(f"celsius 必须在 {F.TEMPSET_MIN}-{F.TEMPSET_MAX}")
             return {"celsius": v}
+
+        if name == "set_near_threshold":
+            v = int(args["cm"])
+            if not F.NEARCM_MIN <= v <= F.NEARCM_MAX:
+                raise ValueError(f"cm 必须在 {F.NEARCM_MIN}-{F.NEARCM_MAX}")
+            return {"cm": v}
 
         if name == "set_security_mode":
             mode = args.get("mode")
