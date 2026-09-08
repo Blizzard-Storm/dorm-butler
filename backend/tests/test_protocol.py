@@ -65,7 +65,7 @@ def test_build_request_shape():
     assert frame_crc_ok(frame)
 
 
-def _make_env_response(temp10: int, lux: int, fan: int) -> bytes:
+def _make_env_response(temp10: int, lux: int, fan: int, threshold: int = 28) -> bytes:
     buf = bytearray(F.RSP_LEN)
     buf[F.F_ADDR] = F.ADDR_ENV
     buf[F.F_FUNC] = F.FUNC_POLL
@@ -74,17 +74,19 @@ def _make_env_response(temp10: int, lux: int, fan: int) -> bytes:
     F.put_i16(buf, F.RSP_DATA + F.D_ENV_TEMP_H, temp10)
     buf[F.RSP_DATA + F.D_ENV_LUX] = lux
     buf[F.RSP_DATA + F.D_ENV_FAN] = fan
+    buf[F.RSP_DATA + F.D_ENV_TEMPSET] = threshold
     return bytes(frame_set_crc(buf))
 
 
 def test_parse_env_response():
-    frame = _make_env_response(-125, 3, 65)
+    frame = _make_env_response(-125, 3, 65, 31)
     parsed = F.parse_response(frame)
     assert parsed is not None
     env = F.decode_env(parsed["data"])
     assert env["temp_c"] == -12.5
     assert env["lux_level"] == 3
     assert env["fan_duty"] == 65
+    assert env["temp_threshold"] == 31
     assert env["fan_on"] and env["window_open"]
 
 

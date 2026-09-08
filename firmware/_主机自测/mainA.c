@@ -412,6 +412,14 @@ void HandleRsp()
 	OnlineMask  |= (unsigned char)(1 << idx);
 	if(RspBuf[F_FUNC] == FUNC_SETCFG) CfgDirty[idx] = 0;   /* 从站确认收到配置了 */
 
+	/* Accept NodeB local changes only when no newer master value is pending. */
+	if(idx == 0 && !CfgDirty[0])
+	{
+		i = SlvD[0][D_ENV_TEMPSET];
+		if(i >= CfgTab[CFG_TEMPSET][CFG_MIN] && i <= CfgTab[CFG_TEMPSET][CFG_MAX])
+			Cfg[CFG_TEMPSET] = i;
+	}
+
 	if(idx == 1)
 	{
 		if(SlvD[1][D_SEC_ALARM] >= ALM_ALARM) StartSound(2);

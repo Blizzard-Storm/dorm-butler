@@ -7,10 +7,10 @@ $healthUrl = 'http://127.0.0.1:8000/api/health'
 $homeUrl = 'http://localhost:8000'
 
 if (-not (Test-Path -LiteralPath $python)) {
-    throw "找不到虚拟环境，请先双击 setup.cmd：$python"
+    throw "Python virtual environment not found. Run setup.cmd first: $python"
 }
 if (-not (Test-Path -LiteralPath $frontendIndex)) {
-    throw '找不到 frontend/dist/index.html，请先运行 build-and-serve.cmd 构建前端。'
+    throw 'frontend/dist/index.html was not found. Run build-and-serve.cmd first.'
 }
 
 $healthy = $false
@@ -25,12 +25,16 @@ if (-not $healthy) {
     $listener = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($listener) {
-        throw "端口 8000 已被其他程序占用（PID $($listener.OwningProcess)），寝室管家无法启动。"
+        throw "Port 8000 is already used by PID $($listener.OwningProcess)."
     }
 
-    Start-Process -FilePath $python `
-        -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', '8000') `
-        -WorkingDirectory $backend -WindowStyle Hidden
+    $launchArgs = @{
+        FilePath = $python
+        ArgumentList = @('-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', '8000')
+        WorkingDirectory = $backend
+        WindowStyle = 'Hidden'
+    }
+    Start-Process @launchArgs
 
     for ($attempt = 1; $attempt -le 12; $attempt++) {
         Start-Sleep -Milliseconds 500
@@ -47,14 +51,14 @@ if (-not $healthy) {
 }
 
 if (-not $healthy) {
-    throw '后端启动超时，请检查 COM4、backend/.env 和 Python 依赖。'
+    throw 'Backend startup timed out. Check COM4, backend/.env, and Python dependencies.'
 }
 
 try {
     Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8000/api/serial/resume' -TimeoutSec 3 | Out-Null
 } catch {
-    Write-Warning '服务已启动，但 COM4 暂未恢复；请关闭 STC-ISP 或串口助手后刷新网页。'
+    Write-Warning 'The web service is running, but COM4 could not be resumed. Close STC-ISP or a serial assistant, then refresh.'
 }
 
 Start-Process $homeUrl
-Write-Host "寝室管家已启动：$homeUrl"
+Write-Host "Dorm Butler started: $homeUrl"

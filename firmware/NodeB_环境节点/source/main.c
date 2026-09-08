@@ -313,7 +313,7 @@ void BuildRsp(unsigned char func)
 	PutI16(&RspBuf[RSP_DATA + D_ENV_RAWRT_H ], (int)RawRt);
 	PutI16(&RspBuf[RSP_DATA + D_ENV_RAWROP_H], (int)RawRop);
 	RspBuf[RSP_DATA + D_ENV_MISS ] = PollMiss;
-	RspBuf[RSP_DATA + D_ENV_RSV  ] = 0;
+	RspBuf[RSP_DATA + D_ENV_TEMPSET] = CfgTempSet;
 
 	FrameSetCrc(RspBuf, RSP_LEN);
 }

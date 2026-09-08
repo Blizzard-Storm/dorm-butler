@@ -670,7 +670,15 @@ void HandleRsp()
 
 	MissCnt[idx] = 0;
 	OnlineMask  |= (unsigned char)(1 << idx);
-	if(RspBuf[F_FUNC] == FUNC_SETCFG) CfgDirty[idx] = 0;   /* 从站确认收到配置了 */
+	if(RspBuf[F_FUNC] == FUNC_SETCFG) CfgDirty[idx] = 0;
+
+	/* Accept NodeB local changes only when no newer master value is pending. */
+	if(idx == 0 && !CfgDirty[0])
+	{
+		i = SlvD[0][D_ENV_TEMPSET];
+		if(i >= CfgTab[CFG_TEMPSET][CFG_MIN] && i <= CfgTab[CFG_TEMPSET][CFG_MAX])
+			Cfg[CFG_TEMPSET] = i;
+	}
 
 #if (USE_PC_CMD)
 	/* PC 在等这个从站的确认，现在拿到了，补发回执。
