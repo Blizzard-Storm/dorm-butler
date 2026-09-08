@@ -10,12 +10,14 @@ echo   ============================================
 echo.
 
 REM ---------------------------------------------------------------- 找 Python
+REM Prefer the py launcher: a python on PATH may be MSYS2/Cygwin, whose venv
+REM layout is .venv/bin, while every script here expects .venv\Scripts.
 set "PYCMD="
-for %%P in (python py) do (
-    if not defined PYCMD (
-        %%P --version >nul 2>&1
-        if !errorlevel! equ 0 set "PYCMD=%%P"
-    )
+py -3 --version >nul 2>&1
+if !errorlevel! equ 0 set "PYCMD=py -3"
+if not defined PYCMD (
+    python --version >nul 2>&1
+    if !errorlevel! equ 0 set "PYCMD=python"
 )
 if not defined PYCMD (
     echo   [X] 没有找到 Python。
@@ -39,12 +41,28 @@ if exist ".venv\Scripts\python.exe" (
     )
 )
 
+REM Must be a Windows-layout venv, otherwise every command below fails with
+REM "The system cannot find the path specified".
+if not exist ".venv\Scripts\python.exe" (
+    echo.
+    echo   [X] 虚拟环境建好了，但里面没有 .venv\Scripts\python.exe。
+    echo.
+    echo       说明 %PYCMD% 不是 Windows 原生 Python（常见于 MSYS2 / Cygwin / Git Bash
+    echo       自带的那个），它生成的是 .venv\bin 布局，本项目的启动脚本不认。
+    echo.
+    echo       解决：装官方 Windows 版 Python（https://www.python.org/downloads/ ，
+    echo       安装时勾选 [Add python.exe to PATH]），删掉 .venv 目录，再双击本文件。
+    echo.
+    pause & exit /b 1
+)
+
 echo         安装依赖，约需 1 分钟，请稍候...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip --quiet
 ".venv\Scripts\python.exe" -m pip install -r "backend\requirements.txt" --quiet
 if errorlevel 1 (
     echo.
-    echo   [!] 依赖安装失败，多半是网络问题。换清华镜像再试一次：
+    echo   [!] 依赖安装失败，先看上面 pip 打出来的报错。如果是连不上 pypi.org，
+    echo       换清华镜像再试一次：
     echo.
     echo       .venv\Scripts\python.exe -m pip install -r backend\requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
     echo.

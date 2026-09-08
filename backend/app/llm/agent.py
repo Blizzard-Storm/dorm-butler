@@ -85,7 +85,8 @@ class LLMAgent:
         ui_calls: list[dict] = list(pre_calls)
 
         try:
-            async with httpx.AsyncClient(timeout=self.settings.llm_timeout_s) as client:
+            # 某些校园网/本机代理会中断 Python 的 HTTPS CONNECT 握手；LLM API 直连。
+            async with httpx.AsyncClient(timeout=self.settings.llm_timeout_s, trust_env=False) as client:
                 for _ in range(MAX_TOOL_ROUNDS):
                     data = await self._completion(client, convo)
                     choice = data["choices"][0]
