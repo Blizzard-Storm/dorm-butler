@@ -6,7 +6,7 @@ import {
 } from 'naive-ui'
 import { api } from '../api'
 import type { SystemInfo } from '../types'
-import { fmtDateTime, relTime, state, wsConnected } from '../store'
+import { boardRole, fmtDateTime, relTime, state, wsConnected } from '../store'
 
 const message = useMessage()
 const info = ref<SystemInfo | null>(null)
@@ -72,6 +72,15 @@ onMounted(load)
           </NTag>
           <span class="dim">　最后收帧 {{ relTime(s?.link.last_frame_at) }}</span>
         </NDescriptionsItem>
+        <NDescriptionsItem label="板子固件">
+          <template v-if="boardRole">
+            <NTag :type="boardRole.confirmed ? 'success' : 'warning'" size="small" round>
+              {{ boardRole.name }}{{ boardRole.confirmed ? '' : '（推测）' }}
+            </NTag>
+            <span class="dim">　{{ boardRole.reason }}</span>
+          </template>
+          <span v-else class="dim">尚未判定（还没收到足够的判据）</span>
+        </NDescriptionsItem>
         <NDescriptionsItem label="WebSocket">
           <NTag :type="wsConnected ? 'success' : 'error'" size="small" round>
             {{ wsConnected ? '已连接' : '断开重连中' }}
@@ -96,7 +105,9 @@ onMounted(load)
       </div>
       <div v-if="!isMock" class="tip">
         要用 STC-ISP 烧录板子时，先点上面「暂停串口」——串口独占，STC-ISP
-        和后端不能同时打开同一个口。烧完点「恢复串口」，网页全程不用刷新、不用重启后端。
+        和后端不能同时打开同一个口。网页全程不用刷新、不用重启后端。
+        烧录时按 STC 要求拔插一次 USB，后端看到端口消失又出现就会自己恢复，
+        不用回来点按钮；真忘了也没关系，超过 15 分钟会自动恢复。
       </div>
     </NCard>
 

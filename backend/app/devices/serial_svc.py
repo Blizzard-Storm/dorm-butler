@@ -35,6 +35,20 @@ log = logging.getLogger(__name__)
 NODE_A_TIMEOUT_S = 5.0
 RECONNECT_INTERVAL_S = 2.0
 
+# 串口开着、却一行合法报文都收不到，超过这个时间就如实说"板子没在往 USB 发数据"。
+# 最常见的原因是烧了 NodeC——它只用 Uart2 走 485，压根不碰 USB 串口。
+SILENT_PORT_S = 8.0
+
+# 暂停（烧录）期间的自愈参数。
+# 判据是【端口枚举】的消失与重现，而不是反复去试着打开端口：
+# STC-ISP 烧录时独占 COM 口，我们要是去试开就会跟它抢，把烧录弄失败。
+# 而 STC 的冷启动握手本来就要求拔掉 USB 再插上，这一拔一插会让 CH340
+# 从设备列表里消失再出现——这是个不用碰端口就能观测到的可靠信号。
+PAUSE_POLL_S = 1.0             # 多久看一眼端口枚举
+PAUSE_REPLUG_SETTLE_S = 2.0    # 端口重新出现后先等一会，让 STC-ISP 先拿；它不要我们再拿
+PAUSE_MAX_S = 900.0            # 兜底：无论如何不会永远停在暂停态
+
+
 def list_serial_ports() -> list[dict]:
     return [
         {"device": p.device, "description": p.description, "hwid": p.hwid}
@@ -67,6 +81,16 @@ class SerialDeviceService(DeviceService):
         # 手动暂停（例如烧录前）与串口异常断开是两回事：前者是操作者主动要求，
         # 页面不该把它当成故障去告警。只有 pause()/resume() 会改这个标志。
         self.paused = False
+        self._pause_task: asyncio.Task | None = None
+        self.pause_phase: str | None = None   # waiting_isp | burning | None
+
+        # 连的到底是哪块板。报文本身没有身份字段，只能靠"这个固件会往 USB
+        # 发什么"来认，所以这里记录判据，前端要能看到我们是"确认"还是"推测"。
+        self.board_role: str | None = None        # "A" / "B" / "C" / None
+        self.role_confidence = "unknown"          # unknown | probable | confirmed
+        self.role_reason = ""
+        self._counters_at_open: dict[str, int] = {}
+        self._opened_at = None
 
         s = self.state
         s.mode = self.mode
@@ -117,17 +141,68 @@ class SerialDeviceService(DeviceService):
         """
         await self.stop()
         self.paused = True
+        self.pause_phase = "waiting_isp"
+        self._reset_role()
         self._invalidate_all_nodes()
+        if self._pause_task is None or self._pause_task.done():
+            self._pause_task = asyncio.create_task(self._pause_watch(), name="serial-pause-watch")
         await bus.publish(TOPIC_EVENT, _event(
-            "link", "info", f"串口已暂停（{reason}），网页仍可正常使用，烧录完成后点击恢复"))
+            "link", "info", f"串口已暂停（{reason}），网页仍可正常使用；"
+                            f"烧完拔插 USB 会自动恢复，也可以手动点恢复"))
         await self._push_state()
 
     async def resume(self) -> None:
         """从 pause() 恢复，重新打开串口并继续常规的读取与自动重连。"""
+        if self._pause_task and not self._pause_task.done():
+            self._pause_task.cancel()
+        self._pause_task = None
+        self.pause_phase = None
         self.paused = False
+        self._reset_role()
         await self.start()
         await bus.publish(TOPIC_EVENT, _event("link", "info", "串口已恢复，正在重新连接"))
         await self._push_state()
+
+    async def _pause_watch(self) -> None:
+        """暂停期间盯着端口枚举，等板子烧完重新上电就自己接回来。
+
+        全程不打开串口，因此不会跟 STC-ISP 抢端口。真正触发恢复的是
+        "端口先从系统里消失、之后又出现"——也就是 STC 冷启动必须做的那次拔插。
+        没等到也不会一直挂着：超过 PAUSE_MAX_S 就兜底恢复。
+        """
+        started = now()
+        saw_gone = False
+        try:
+            while True:
+                await asyncio.sleep(PAUSE_POLL_S)
+                present = any(p["device"] == self.port for p in list_serial_ports())
+
+                if not present:
+                    if not saw_gone:
+                        saw_gone = True
+                        self.pause_phase = "burning"
+                        await bus.publish(TOPIC_EVENT, _event(
+                            "link", "info", f"{self.port} 已从系统移除（拔掉 USB），等待板子重新上电"))
+                        await self._push_state()
+                elif saw_gone:
+                    # 板子插回来了。先让 STC-ISP 有机会拿住端口把最后一步做完，
+                    # 我们晚一步再去开；开不了也没关系，读线程本来就会自动重试。
+                    await asyncio.sleep(PAUSE_REPLUG_SETTLE_S)
+                    await bus.publish(TOPIC_EVENT, _event(
+                        "link", "info", f"检测到 {self.port} 重新上电，串口自动恢复"))
+                    self._pause_task = None
+                    await self.resume()
+                    return
+
+                if (now() - started).total_seconds() > PAUSE_MAX_S:
+                    await bus.publish(TOPIC_EVENT, _event(
+                        "link", "warning",
+                        f"暂停已超过 {PAUSE_MAX_S / 60:.0f} 分钟，自动恢复串口以免一直停在暂停态"))
+                    self._pause_task = None
+                    await self.resume()
+                    return
+        except asyncio.CancelledError:
+            pass
 
     # ------------------------------------------------------------------ 串口读取线程
 
@@ -181,6 +256,9 @@ class SerialDeviceService(DeviceService):
     async def _on_connect(self) -> None:
         self.state.link_connected = True
         self.state.link_detail = {"port": self.port, "baud": self.baud}
+        # 端口刚打开时还不知道对面是哪块板，重新开始取证。
+        self._reset_role()
+        self._opened_at = now()
         await bus.publish(TOPIC_EVENT, _event("link", "info", f"串口 {self.port} 已连接"))
         await self._push_state()
 
@@ -193,9 +271,66 @@ class SerialDeviceService(DeviceService):
 
     async def _on_disconnect(self, err: str) -> None:
         self.state.link_connected = False
+        self._reset_role()
         self._invalidate_all_nodes()
         await bus.publish(TOPIC_EVENT, _event("link", "warning", f"串口断开：{err}，正在重连"))
         await self._push_state()
+
+    # ------------------------------------------------------------------ 板子身份识别
+
+    def _reset_role(self) -> None:
+        """换了板子/断了线，之前的取证一律作废，重新开始认。"""
+        self.board_role = None
+        self.role_confidence = "unknown"
+        self.role_reason = ""
+        self._opened_at = None
+        p = self.parser
+        self._counters_at_open = {
+            "lines_ok": p.lines_ok, "cal_ok": p.cal_ok,
+            "cfg_ok": p.cfg_ok, "status_ok": p.status_ok,
+        }
+
+    def _since_open(self, name: str) -> int:
+        return getattr(self.parser, name) - self._counters_at_open.get(name, 0)
+
+    def _update_role(self) -> bool:
+        """靠"这个固件往 USB 发什么"来认板子，而不是假定它一定是 NodeA。
+
+        返回判定是否发生了变化，调用方据此决定要不要播事件。
+
+        三个固件的串口特征互不相同，已逐一核对过固件源码：
+          NodeA 主控网关  报文 + CFG + STA（+ 下发时的 ACK）
+          NodeB 环境节点  报文 + CAL，从不发 STA/CFG
+          NodeC 安防节点  只用 Uart2 走 485，USB 上一个字节都不发
+        所以 CAL 是 NodeB 的指纹，STA/CFG 是 NodeA 的指纹，而"端口打开着却
+        长时间一行都收不到"基本就是 NodeC（也可能板子没跑起来或波特率不对，
+        这两种可能必须一起说出来，不能咬定是 C）。
+        """
+        prev = (self.board_role, self.role_confidence)
+
+        if self._since_open("cal_ok") > 0:
+            self.board_role, self.role_confidence = "B", "confirmed"
+            self.role_reason = "收到 CAL 标定行，只有 NodeB 固件会发"
+        elif self._since_open("status_ok") > 0 or self._since_open("cfg_ok") > 0:
+            self.board_role, self.role_confidence = "A", "confirmed"
+            self.role_reason = "收到 STA/CFG 行，只有 NodeA 固件会发"
+        elif self._since_open("lines_ok") > 0:
+            # 只有主报文。NodeA 和 NodeB 都会发，还不能下结论，
+            # 但 NodeA 每秒都有 STA，再等一两秒基本就能确认了。
+            self.board_role, self.role_confidence = "A", "probable"
+            self.role_reason = "收到主报文但还没等到 STA/CFG，暂按 NodeA 处理"
+        elif (
+            self.state.link_connected
+            and self._opened_at is not None
+            and (now() - self._opened_at).total_seconds() > SILENT_PORT_S
+        ):
+            self.board_role, self.role_confidence = "C", "probable"
+            self.role_reason = (
+                f"串口开着但 {SILENT_PORT_S:.0f} 秒内没收到任何数据。"
+                "NodeC 固件只走 485 不发 USB，最可能是它；"
+                "也可能是板子没运行或波特率不对")
+
+        return prev != (self.board_role, self.role_confidence)
 
     def _invalidate_all_nodes(self) -> None:
         """作废链路断开后所有不再可信的实时状态。"""
@@ -232,14 +367,25 @@ class SerialDeviceService(DeviceService):
         s.frames_ok = self.parser.lines_ok
         s.frames_bad = self.parser.lines_bad
 
-        s.node_a.online = True
-        s.node_a.last_seen = r.received_at
-        s.node_b.online = r.node_b_online
-        s.node_c.online = r.node_c_online
-        if r.node_b_online:
+        self._update_role()
+
+        if self.board_role == "B":
+            # 直连的是 NodeB 自己，不是网关。它报的 O 位是它对总线的看法，
+            # 而此刻根本没有 NodeA 在轮询，所以只能确认"B 自己活着"。
+            s.node_a.online = False
+            s.node_a.last_seen = None
+            s.node_b.online = True
             s.node_b.last_seen = r.received_at
-        if r.node_c_online:
-            s.node_c.last_seen = r.received_at
+            s.node_c.online = False
+        else:
+            s.node_a.online = True
+            s.node_a.last_seen = r.received_at
+            s.node_b.online = r.node_b_online
+            s.node_c.online = r.node_c_online
+            if r.node_b_online:
+                s.node_b.last_seen = r.received_at
+            if r.node_c_online:
+                s.node_c.last_seen = r.received_at
 
         s.temp_c = r.temp_c
         s.temp_saturated = r.temp_saturated
@@ -366,6 +512,14 @@ class SerialDeviceService(DeviceService):
         while True:
             await asyncio.sleep(1.0)
             s = self.state
+
+            # 端口开着却一直没数据，也是一种要如实说出来的状态（多半是 NodeC）
+            if self._update_role():
+                await bus.publish(TOPIC_EVENT, _event(
+                    "link", "info" if self.role_confidence == "confirmed" else "warning",
+                    f"识别到板子固件：{_role_label(self.board_role)}（{self.role_reason}）"))
+                await self._push_state()
+
             stale = (
                 s.last_frame_at is None
                 or (now() - s.last_frame_at) > timedelta(seconds=NODE_A_TIMEOUT_S)
@@ -382,6 +536,10 @@ class SerialDeviceService(DeviceService):
             "baud": self.baud,
             "readonly": False,
             "paused": self.paused,
+            "pause_phase": self.pause_phase,
+            "board_role": self.board_role,
+            "board_role_confidence": self.role_confidence,
+            "board_role_reason": self.role_reason,
             "inflight": len(self._inflight),
             "acks": self.parser.ack_ok,
             "frames_ok": self.parser.lines_ok,
@@ -607,6 +765,17 @@ def _plan_command(name: str, params: dict) -> tuple[str, list[tuple] | None]:
         return "A", [cfg(F.CFG_ALMH, int(params["hour"])),
                      cfg(F.CFG_ALMM, int(params["minute"]))]
     return "-", None
+
+
+ROLE_LABELS = {
+    "A": "NodeA 主控网关",
+    "B": "NodeB 环境节点",
+    "C": "NodeC 安防节点",
+}
+
+
+def _role_label(role: str | None) -> str:
+    return ROLE_LABELS.get(role or "", "未知")
 
 
 def _event(kind: str, level: str, message: str, node: str = "-") -> dict:

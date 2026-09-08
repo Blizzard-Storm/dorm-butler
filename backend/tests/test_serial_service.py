@@ -17,7 +17,13 @@ from datetime import timedelta
 import pytest
 
 from app.devices.base import Command, CommandName, CommandStatus, now
-from app.devices.serial_svc import NODE_A_TIMEOUT_S, SerialDeviceService, _plan_command
+from app.devices.serial_svc import (
+    NODE_A_TIMEOUT_S,
+    SILENT_PORT_S,
+    SerialDeviceService,
+    _plan_command,
+)
+import app.devices.serial_svc as svc_mod
 from app.protocol import frames as F
 from app.protocol.crc import crc16_modbus
 
@@ -391,3 +397,159 @@ def test_serial_disconnect_immediately_invalidates_all_readings(svc):
     assert s.lux_adc is None and s.temp_adc is None
     assert s.distance_cm is None and s.alarm_level is None
     assert s.fan_mode is None and s.distance_valid is False
+
+
+# ---------------------------------------------------------------- 板子身份识别
+#
+# 报文里没有身份字段，只能靠"这个固件往 USB 发什么"来认。三份固件的
+# 串口特征已逐一核对过源码：A 发 STA/CFG，B 发 CAL，C 一个字节都不发。
+
+
+def test_bare_report_is_only_probably_node_a(svc):
+    """只有主报文时 A 和 B 都可能，必须标成推测，不能假装已经确认。"""
+    async def scenario():
+        await svc._on_connect()
+        await afeed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
+
+    asyncio.run(scenario())
+    assert svc.board_role == "A"
+    assert svc.role_confidence == "probable"
+
+
+def test_sta_line_confirms_node_a(svc):
+    """STA 只有 NodeA 固件会发，收到就能坐实。"""
+    async def scenario():
+        await svc._on_connect()
+        await afeed(svc, b"STA BF=003 BP=000 CF=017 CS=2 V=012 D=003 "
+                         b"CP=000 AP=000 L=12345 RB=0 RC=0\r\n")
+        await afeed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
+
+    asyncio.run(scenario())
+    assert (svc.board_role, svc.role_confidence) == ("A", "confirmed")
+    assert svc.state.node_a.online is True
+
+
+def test_cal_line_confirms_node_b_and_clears_fake_node_a(svc):
+    """直连 NodeB 时不能再谎报"NodeA 在线"——此刻总线上根本没有主站。"""
+    async def scenario():
+        await svc._on_connect()
+        await afeed(svc, b"CAL RT=0465 ROP=0712\r\n")
+        await afeed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
+
+    asyncio.run(scenario())
+    s = svc.state
+    assert (svc.board_role, svc.role_confidence) == ("B", "confirmed")
+    assert s.node_a.online is False      # 关键：以前这里恒为 True
+    assert s.node_b.online is True
+    assert s.node_c.online is False
+
+
+def test_silent_port_is_reported_as_probably_node_c(svc):
+    """NodeC 只走 485，USB 上不发东西。端口开着却没数据要如实说，不能显示"已连接"了事。"""
+    async def scenario():
+        await svc._on_connect()
+        svc._opened_at = now() - timedelta(seconds=SILENT_PORT_S + 1)
+        svc._update_role()
+
+    asyncio.run(scenario())
+    assert svc.board_role == "C"
+    assert svc.role_confidence == "probable"
+    # 只是"最可能"，其它成因必须一并说明，不能咬死是 C
+    assert "波特率" in svc.role_reason
+
+
+def test_role_is_discarded_on_disconnect(svc):
+    """换板子必须重新取证，不能把上一块板的身份沿用到下一块。"""
+    async def scenario():
+        await svc._on_connect()
+        await afeed(svc, b"CAL RT=0465 ROP=0712\r\n")
+        await afeed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
+        assert svc.board_role == "B"
+        await svc._on_disconnect("device removed")
+
+    asyncio.run(scenario())
+    assert svc.board_role is None
+    assert svc.role_confidence == "unknown"
+
+
+def test_pause_exposes_phase_and_clears_role(svc, monkeypatch):
+    """暂停要能被页面识别成"暂停"而不是"故障"，同时作废身份判定。"""
+    async def scenario():
+        await svc._on_connect()
+        await afeed(svc, b"[21:30:05] T+235 L2 F040 D120 A0 O11 E000\r\n")
+        await svc.pause()
+        if svc._pause_task:
+            svc._pause_task.cancel()
+
+    asyncio.run(scenario())
+    assert svc.paused is True
+    assert svc.pause_phase == "waiting_isp"
+    assert svc.board_role is None
+    assert svc.state.link_detail["paused"] is True
+    assert svc.state.link_detail["pause_phase"] == "waiting_isp"
+
+
+def test_pause_auto_resumes_after_usb_replug(svc, monkeypatch):
+    """烧完拔插一次 USB 就该自己接回来，不能一直停在暂停态等人来点。
+
+    判据用的是端口枚举的"消失又出现"，全程不去打开端口——
+    烧录时 STC-ISP 独占 COM 口，去试开就会跟它抢，把烧录搞失败。
+    """
+    monkeypatch.setattr(svc_mod, "PAUSE_POLL_S", 0.01)
+    monkeypatch.setattr(svc_mod, "PAUSE_REPLUG_SETTLE_S", 0.01)
+
+    # 端口列表按 在 -> 拔掉 -> 插回 的顺序变化
+    seq = [[{"device": "COM_TEST"}]] * 2 + [[]] * 2 + [[{"device": "COM_TEST"}]] * 20
+    calls = {"n": 0}
+
+    def fake_ports():
+        i = min(calls["n"], len(seq) - 1)
+        calls["n"] += 1
+        return seq[i]
+
+    monkeypatch.setattr(svc_mod, "list_serial_ports", fake_ports)
+
+    started = {"n": 0}
+
+    async def fake_start():
+        started["n"] += 1
+
+    monkeypatch.setattr(svc, "start", fake_start)
+    monkeypatch.setattr(svc, "stop", fake_start)
+
+    async def scenario():
+        await svc.pause()
+        assert svc.paused is True
+        for _ in range(200):                 # 最多等 2 秒，正常几十毫秒就好
+            if not svc.paused:
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+
+    assert svc.paused is False               # 没人点按钮，它自己回来了
+    assert svc.pause_phase is None
+
+
+def test_pause_does_not_probe_the_port_while_burning(svc, monkeypatch):
+    """暂停期间绝不能去打开串口——那正是烧录工具独占着的资源。"""
+    monkeypatch.setattr(svc_mod, "PAUSE_POLL_S", 0.01)
+    monkeypatch.setattr(svc_mod, "list_serial_ports", lambda: [])
+
+    opened = {"n": 0}
+
+    class Boom:
+        def __init__(self, *a, **kw):
+            opened["n"] += 1
+            raise AssertionError("暂停期间不该打开串口")
+
+    monkeypatch.setattr(svc_mod.serial, "Serial", Boom)
+
+    async def scenario():
+        await svc.pause()
+        await asyncio.sleep(0.1)             # 让看门狗转好几圈
+        if svc._pause_task:
+            svc._pause_task.cancel()
+
+    asyncio.run(scenario())
+    assert opened["n"] == 0
