@@ -46,3 +46,10 @@ firmware/**/*.dep
 
 # 本地临时备份
 *.zip
+
+# 测试文件夹
+log/
+
+# doc 文档
+*.doc
+*.docx
