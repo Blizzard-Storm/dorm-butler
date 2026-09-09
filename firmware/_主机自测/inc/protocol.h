@@ -135,7 +135,7 @@
 #define D_ENV_RAWROP_H      8           /* 光敏电阻原始 ADC 值 */
 #define D_ENV_RAWROP_L      9
 #define D_ENV_MISS          10          /* 本节点每秒轮询丢失数（GetSysPerformance），观察 1mS 约束用 */
-#define D_ENV_RSV           11
+#define D_ENV_TEMPSET       11          /* current temperature threshold, degrees Celsius */
 
 #define ENVF_FAN_ON         0x01        /* bit0 风扇在转 */
 #define ENVF_WIN_OPEN       0x02        /* bit1 通风窗已打开 */

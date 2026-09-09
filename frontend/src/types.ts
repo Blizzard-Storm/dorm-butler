@@ -24,6 +24,12 @@ export interface SystemState {
     readonly?: boolean
     readonly_reason?: string
     paused?: boolean
+    /** 暂停期间的阶段：waiting_isp = 等 STC-ISP 接手；burning = 端口已从系统移除，烧录中 */
+    pause_phase?: 'waiting_isp' | 'burning' | null
+    /** 连的是哪块板。靠固件的串口特征认出来的，不是假定 */
+    board_role?: 'A' | 'B' | 'C' | null
+    board_role_confidence?: 'unknown' | 'probable' | 'confirmed'
+    board_role_reason?: string
     simulated?: boolean
     frames_ok?: number
     frames_bad?: number

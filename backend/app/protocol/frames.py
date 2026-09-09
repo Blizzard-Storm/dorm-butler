@@ -38,7 +38,7 @@ D_ENV_TEMP_H, D_ENV_TEMP_L = 2, 3
 D_ENV_LUX, D_ENV_FAN = 4, 5
 D_ENV_RAWRT_H, D_ENV_RAWRT_L = 6, 7
 D_ENV_RAWROP_H, D_ENV_RAWROP_L = 8, 9
-D_ENV_MISS, D_ENV_RSV = 10, 11
+D_ENV_MISS, D_ENV_TEMPSET = 10, 11
 
 ENVF_FAN_ON = 0x01
 ENVF_WIN_OPEN = 0x02
@@ -198,6 +198,7 @@ def decode_env(data: bytes) -> dict:
         "raw_rt": (data[D_ENV_RAWRT_H] << 8) | data[D_ENV_RAWRT_L],
         "raw_rop": (data[D_ENV_RAWROP_H] << 8) | data[D_ENV_RAWROP_L],
         "poll_miss": data[D_ENV_MISS],
+        "temp_threshold": data[D_ENV_TEMPSET],
         "fan_on": bool(flags & ENVF_FAN_ON),
         "window_open": bool(flags & ENVF_WIN_OPEN),
         "temp_high": bool(flags & ENVF_TEMP_HI),

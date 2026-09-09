@@ -111,8 +111,31 @@ export const online = computed(() => wsConnected.value && !!state.value?.link.co
 
 export const alarmActive = computed(() => (state.value?.security.alarm_level ?? 0) >= 2)
 
+/** 串口是被人主动暂停的（烧录），不是坏了。这两种情况必须分开显示。 */
+export const paused = computed(() => !!state.value?.link.paused)
+
+/** 认出来的板子固件角色，附带我们有多确定。识别不出来时返回 null。 */
+export const boardRole = computed(() => {
+  const l = state.value?.link
+  if (!l?.board_role) return null
+  const names = { A: 'NodeA 主控网关', B: 'NodeB 环境节点', C: 'NodeC 安防节点' } as const
+  return {
+    code: l.board_role,
+    name: names[l.board_role],
+    confirmed: l.board_role_confidence === 'confirmed',
+    reason: l.board_role_reason ?? '',
+  }
+})
+
 export const overallStatus = computed<{ text: string; type: 'success' | 'warning' | 'error' | 'info' }>(() => {
   if (!wsConnected.value) return { text: '后台离线', type: 'error' }
+  // 暂停要排在断开前面判断：它是操作者自己要求的，报成红色故障会让人以为板子坏了，
+  // 而真正该做的只是烧完点一下恢复。
+  if (paused.value) {
+    return state.value?.link.pause_phase === 'burning'
+      ? { text: '烧录中 · 串口已让出', type: 'warning' }
+      : { text: '串口已暂停（烧录）', type: 'warning' }
+  }
   if (!state.value?.link.connected) return { text: '设备链路断开', type: 'error' }
   if (alarmActive.value) return { text: '安防报警中', type: 'error' }
   const s = state.value

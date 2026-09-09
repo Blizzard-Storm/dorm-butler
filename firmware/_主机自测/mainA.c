@@ -73,7 +73,7 @@
  *================================================================================================*/
 #define USE_REPORT          1           /* 上位机文本报文  实测约 360 字节（含模板和 RepN） */
 #define USE_IRRX            0           /* 收节点C 的红外指令  约  90 字节 */
-#define USE_SOUND           0           /* 闹钟音乐 + 报警旋律  约 130 字节。关掉退化成蜂鸣器短鸣，
+#define USE_SOUND           1           /* 闹钟音乐 + 报警旋律  约 130 字节。关掉退化成蜂鸣器短鸣，
                                            节点C 那边照样会响警笛，所以这是最先该关的一个 */
 #define USE_CURTAIN         0           /* 光照 + 时间联动窗帘  约 120 字节 */
 #define USE_FM              0           /* 闹钟到点开 FM 广播   约  60 字节，另需插耳机 */
@@ -157,10 +157,14 @@ code unsigned char CfgTab[CFG_N][5] = {
  * 三、音乐
  *================================================================================================*/
 #if (USE_SOUND)
-/* 起床音乐：《小星星》开头一句 */
+/* Wake-up melody: simplified monophonic chorus motif from Red Sun. */
 code unsigned char WakeSong[] = {
-	0x21, 0x10,  0x21, 0x10,  0x25, 0x10,  0x25, 0x10,  0x26, 0x10,  0x26, 0x10,  0x25, 0x20,
-	0x24, 0x10,  0x24, 0x10,  0x23, 0x10,  0x23, 0x10,  0x22, 0x10,  0x22, 0x10,  0x21, 0x20
+	0x25,0x08, 0x25,0x08, 0x25,0x08, 0x26,0x08, 0x25,0x08, 0x23,0x08, 0x22,0x08, 0x21,0x10,
+	0x25,0x08, 0x25,0x08, 0x25,0x08, 0x26,0x08, 0x25,0x08, 0x23,0x08, 0x22,0x08, 0x22,0x10,
+	0x26,0x08, 0x26,0x08, 0x26,0x08, 0x27,0x08, 0x26,0x08, 0x25,0x08, 0x24,0x08, 0x23,0x08,
+	0x23,0x08, 0x22,0x08, 0x23,0x08, 0x25,0x08, 0x23,0x10, 0x00,0x08,
+	0x24,0x08, 0x24,0x08, 0x25,0x08, 0x26,0x08, 0x25,0x08, 0x23,0x10,
+	0x24,0x08, 0x24,0x08, 0x25,0x08, 0x26,0x08, 0x25,0x08, 0x24,0x08, 0x23,0x08, 0x22,0x08, 0x21,0x20
 };
 /* 报警旋律：和节点C 用的是同一段，两块板响起来是一个声音 */
 code unsigned char AlarmSong[] = {
@@ -335,7 +339,7 @@ void StartSound(unsigned char mode)
 	if(Silenced || SoundMode == mode) return;
 
 	SoundMode = mode;
-	if(mode == 1) SetMusic(100, 0xFC, WakeSong,  sizeof(WakeSong),  enumMscNull);
+	if(mode == 1) SetMusic(120, 0xFC, WakeSong,  sizeof(WakeSong),  enumMscNull);
 	else          SetMusic(200, 0xFC, AlarmSong, sizeof(AlarmSong), enumMscNull);
 	SetPlayerMode(enumModePlay);
 }
@@ -411,6 +415,14 @@ void HandleRsp()
 	MissCnt[idx] = 0;
 	OnlineMask  |= (unsigned char)(1 << idx);
 	if(RspBuf[F_FUNC] == FUNC_SETCFG) CfgDirty[idx] = 0;   /* 从站确认收到配置了 */
+
+	/* Accept NodeB local changes only when no newer master value is pending. */
+	if(idx == 0 && !CfgDirty[0])
+	{
+		i = SlvD[0][D_ENV_TEMPSET];
+		if(i >= CfgTab[CFG_TEMPSET][CFG_MIN] && i <= CfgTab[CFG_TEMPSET][CFG_MAX])
+			Cfg[CFG_TEMPSET] = i;
+	}
 
 	if(idx == 1)
 	{
