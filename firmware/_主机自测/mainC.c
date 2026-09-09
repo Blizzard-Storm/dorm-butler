@@ -71,7 +71,7 @@ code char decode_table[] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f
 #define LOCK_SPEED          30
 #define LOCK_STEPS          48          /* 上锁 / 开锁各转多少步 */
 
-#define ARM_DELAY_S         10          /* 布防退出延时，秒 */
+#define ARM_DELAY_S         3           /* 布防退出延时，秒 */
 
 /* 振动去抖：ARMED 状态下，VIB_WINDOW_S 秒内累计 VIB_THRESHOLD 次振动才算异动。
    ！！这两个数【必须实测】。成员3 的实验：分别做「走过去、正常关门、敲桌子、用力晃门」
@@ -112,6 +112,7 @@ xdata unsigned char Locked;                  /* 锁舌 0 开 / 1 上锁 */
 xdata unsigned char AlarmLevel = ALM_NONE;
 xdata unsigned char NearFlag;                /* 有人靠近 */
 xdata unsigned char Silenced;                /* 已被消音，报警状态保持但不再出声 */
+xdata unsigned char AlarmByDoor;             /* 这次报警是门引起的：门关回去就自动解除 */
 
 xdata unsigned char VibCount;                /* 累计有效异动次数，上报主站 */
 xdata unsigned char VibInWindow;             /* 当前窗口内的振动次数 */
@@ -121,8 +122,6 @@ xdata unsigned char DoorCount;               /* 累计开门次数 */
 xdata unsigned char CfgNearCm = DEF_NEARCM;  /* 接近提示阈值，主站可下发覆盖 */
 xdata unsigned char ArmCountdown;            /* 布防倒计时剩余秒 */
 
-xdata unsigned int  RxOkCount;
-xdata unsigned int  RxErrCount;
 xdata unsigned char PollMiss;
 
 data unsigned char Page;
@@ -181,6 +180,7 @@ void EnterState(unsigned char st)
 	{
 	case SECST_DISARMED:
 		AlarmLevel   = ALM_NONE;
+		AlarmByDoor  = 0;
 		Silenced     = 0;
 		VibInWindow  = 0;
 		StopAlarmSound();
@@ -190,12 +190,19 @@ void EnterState(unsigned char st)
 	case SECST_ARMING:
 		ArmCountdown = ARM_DELAY_S;
 		AlarmLevel   = ALM_NONE;
+		AlarmByDoor  = 0;
 		Silenced     = 0;
 		VibInWindow  = 0;
 		break;
 
 	case SECST_ARMED:
-		AlarmLevel = ALM_NONE;
+		/* ALARM -> ARMED 现在是可能的（门关回去，报警自动解除），所以这里
+		   必须连声音和消音标志一起复位：不停声，手上那遍警笛会放完；
+		   不清 Silenced，下一次报警会是哑的。 */
+		AlarmLevel  = ALM_NONE;
+		AlarmByDoor = 0;
+		Silenced    = 0;
+		StopAlarmSound();
 		SetLock(1);                          /* 布防完成时上锁 */
 		break;
 
@@ -208,6 +215,24 @@ void EnterState(unsigned char st)
 
 	default:
 		break;
+	}
+}
+
+/* 门控位驱动的报警：布防状态下门开就报警，门关回去就解除。
+   用【电平】判而不是用霍尔的边沿事件，是因为边沿会漏掉两种情况：
+     - 撤防时门就开着、然后直接按 K3 布防——那个「开」的边沿在布防之前就过去了；
+     - 报警之后把门关上——关门只来一个「接近」事件，原来没人管它，报警就一直挂着。
+   振动引起的报警不走这条路（AlarmByDoor = 0），它仍然要撤防才能解除。 */
+void UpdateDoorAlarm()
+{
+	if(SecState == SECST_ARMED && DoorOpen)
+	{
+		AlarmByDoor = 1;
+		EnterState(SECST_ALARM);
+	}
+	else if(SecState == SECST_ALARM && AlarmByDoor && !DoorOpen)
+	{
+		EnterState(SECST_ARMED);
 	}
 }
 
@@ -254,12 +279,10 @@ void myUart2Rxd_callback()
 {
 	if(ReqBuf[F_ADDR] != ADDR_SEC) return;
 
-	if(!FrameCrcOk(ReqBuf, REQ_LEN))
-	{
-		RxErrCount++;
-		return;
-	}
-	RxOkCount++;
+	/* CRC 不过就整帧丢掉，让主站按超时处理。原来这里还累加收发计数给通信页看，
+	   通信页删掉之后计数就没有出口了——链路健康度看上位机，那边有在线状态、
+	   PollingMisses 和 CRC 错误，比数码管上两位十进制清楚得多。 */
+	if(!FrameCrcOk(ReqBuf, REQ_LEN)) return;
 
 	switch(ReqBuf[F_FUNC])
 	{
@@ -337,16 +360,10 @@ void Refresh()
 		}
 		break;
 
-	case 1:      /* 计数页：1 _ 振动次数(2位) _ _ 开门次数(2位) */
+	default:     /* 计数页：1 _ 振动次数(2位) _ _ 开门次数(2位) */
 		D[0] = 1;
 		NumC(2, VibCount,  2);
 		NumC(6, DoorCount, 2);
-		break;
-
-	default:     /* 通信页：2 _ 收到帧数(低2位) _ _ CRC错误数(低2位) */
-		D[0] = 2;
-		NumC(2, (unsigned char)RxOkCount,  2);
-		NumC(6, (unsigned char)RxErrCount, 2);
 		break;
 	}
 
@@ -381,11 +398,9 @@ void myHall_callback()
 		DoorOpen = 1;
 		DoorCount++;
 
-		if(SecState == SECST_ARMED)          /* 布防状态下开门 = 入侵 */
-		{
-			EnterState(SECST_ALARM);
-		}
-		else if(SecState == SECST_DISARMED)
+		/* 布防状态下的报警不在这里触发：交给 UpdateDoorAlarm() 按门控位的电平判，
+		   否则「撤防时门就开着、然后直接布防」这种情况永远等不到这个边沿 */
+		if(SecState == SECST_DISARMED)
 		{
 			SetBeep(3000, 8);                /* 撤防状态只"嘀"一声表示知道你回来了 */
 		}
@@ -406,6 +421,7 @@ void myVib_callback()
 	if(SecState == SECST_ARMED && VibInWindow >= VIB_THRESHOLD)
 	{
 		VibCount++;
+		AlarmByDoor = 0;                     /* 振动报警不跟着门关自动解除，要撤防 */
 		EnterState(SECST_ALARM);
 	}
 }
@@ -430,6 +446,14 @@ void my100mS_callback()
 			NearFlag = (d <= (int)CfgNearCm) ? 1 : 0;
 		}
 	}
+
+	UpdateDoorAlarm();                       /* 门控位驱动的报警：先判它，再算提示等级 */
+
+	/* 一级提示（报警等级 1）：已布防 + 有人贴在门口。
+	   等级只在 ARMED 里跟着 NearFlag 走——ALARM 是二级，不能被它降回一级；
+	   DISARMED / ARMING 的等级由 EnterState 清零，这里不插手。 */
+	if(SecState == SECST_ARMED)
+		AlarmLevel = NearFlag ? ALM_NOTICE : ALM_NONE;
 
 	Refresh();
 }
@@ -459,8 +483,9 @@ void my1S_callback()
 	if(SecState == SECST_ALARM && !Silenced && GetPlayerMode() != enumModePlay)
 		StartAlarmSound();
 
-	/* 已布防且有人长时间贴在门口，给一级提示（不报警，只是提醒） */
-	if(SecState == SECST_ARMED && NearFlag && AlarmLevel == ALM_NONE)
+	/* 一级提示的声音：每秒“嘀”一声，直到人走开。等级本身在 100mS 回调里维护，
+	   这里不能再写 AlarmLevel == ALM_NONE——等级一升到 1，这声提示就再也不会响了 */
+	if(SecState == SECST_ARMED && NearFlag)
 		SetBeep(3500, 5);
 
 	perf = GetSysPerformance();
@@ -472,7 +497,7 @@ void myKey_callback()
 {
 	if(GetKeyAct(enumKey1) == enumKeyPress)          /* Key1 翻页 */
 	{
-		Page = (Page + 1) % 3;
+		Page = (Page + 1) % 2;
 		SetBeep(3000, 3);
 	}
 
@@ -567,14 +592,15 @@ void main()
  *   2. 拿磁铁靠近再拿开霍尔传感器：第3位在 0 和 1 之间切换，L1 灯跟着亮灭，
  *      撤防状态下拿开磁铁会"嘀"一声。按 Key1 翻到计数页看开门次数在累加。
  *   3. 敲桌子：L2 灯短暂点亮。做去抖实验，把 VIB_THRESHOLD 定下来。
- *   4. 按 K3（摇杆中间那个键，不是 Key3！）布防：进入 10 秒倒计时，每秒"嘀"一声，
+ *   4. 按 K3（摇杆中间那个键，不是 Key3！）布防：进入 3 秒倒计时，每秒"嘀"一声，
  *      数码管显示剩余秒数；倒计时结束 L0 常亮、锁舌动作。
  *   5. 布防状态下拿开磁铁（模拟开门）：立刻进入报警，警笛循环，L4 L5 亮。
  *      按 Key2 消音，警笛停但 L0 仍亮（状态没变，只是不出声了）。再按 K3 撤防，锁舌复位。
  *
  * L2 接总线
- *   6. 与节点A 对接后，通信页收到帧数持续增长、CRC 错误保持 0。
- *      在节点A 的设置页切换布防，本节点应同步进入倒计时。
+ *   6. 与节点A 对接后，在节点A 的设置页切换布防，本节点应同步进入倒计时，
+ *      上位机总览页 NodeC 显示在线。485 链路是否健康看上位机那边的
+ *      在线状态 / PollingMisses / CRC 错误，数码管上不再有通信页。
  *
  * 常见问题
  *   - 距离一直是 000：超声波没接对，或 EXTInit 没生效。先单独跑 hw5-0 的 09 号工程验证模块本身好用。

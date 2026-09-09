@@ -224,7 +224,7 @@ const alarming = computed(() => (s.value?.security.alarm_level ?? 0) >= 2)
           当前：{{ s?.security.security_state ? ({ disarmed: '已撤防', arming: '布防倒计时', armed: '已布防', alarm: '报警中' } as Record<string, string>)[s.security.security_state] : '未知' }}
         </span>
       </NSpace>
-      <div class="note">布防后有 10 秒退出延时，倒计时结束才真正生效（对应 NodeC 的 ARM_DELAY_S）。</div>
+      <div class="note">布防后有 3 秒退出延时，倒计时结束才真正生效（对应 NodeC 的 ARM_DELAY_S）。</div>
     </NCard>
 
     <NCard :bordered="false" class="ctrl-card">

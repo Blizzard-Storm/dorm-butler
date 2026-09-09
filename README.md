@@ -464,8 +464,9 @@ cd firmware/_主机自测 && bash run.sh
 |---|---|
 | 风扇 30% 起转、每超 1℃ 加 7%、1℃ 回差 | NodeB `UpdateFan()` |
 | 通风窗 +3℃ 开、-1℃ 关 | NodeB `UpdateWindow()` |
-| 布防四态机 + 10 秒退出延时 | NodeC 状态机 |
-| 振动 2 秒窗口累计 3 次才报警 | NodeC `myVib_callback()` |
+| 布防四态机 + 3 秒退出延时 | NodeC 状态机 |
+| 布防下门开即报警、门关即解除 | NodeC `UpdateDoorAlarm()` |
+| 振动 2 秒窗口累计 3 次才报警（须撤防才解除） | NodeC `myVib_callback()` |
 | 温度受风扇降温影响形成闭环 | 物理模型 |
 
 诊断页提供故障注入：命令失败率、节点强制离线、模拟开门/振动。默认全关。

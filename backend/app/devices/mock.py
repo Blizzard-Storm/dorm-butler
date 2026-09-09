@@ -7,7 +7,7 @@
 复刻的控制律（与固件一一对应）：
   * 风扇  NodeB UpdateFan()   —— 30% 起转，每超 1℃ 加 7%，上限 100%，1℃ 回差
   * 通风窗 NodeB UpdateWindow() —— 超阈值 +3℃ 开，低于阈值 -1℃ 关
-  * 布防  NodeC 状态机        —— 撤防 / 10 秒退出延时 / 已布防 / 报警
+  * 布防  NodeC 状态机        —— 撤防 / 3 秒退出延时 / 已布防 / 报警
   * 振动  NodeC myVib_callback() —— 2 秒窗口内累计 3 次才报警
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ from .base import (
 )
 
 # NodeC 的常量
-ARM_DELAY_S = 10
+ARM_DELAY_S = 3
 VIB_WINDOW_S = 2
 VIB_THRESHOLD = 3
 
@@ -59,6 +59,7 @@ class MockDeviceService(DeviceService):
         self._sec_state = F.SECST_DISARMED
         self._arm_countdown = 0
         self._alarm_level = F.ALM_NONE
+        self._alarm_by_door = False
         self._silenced = False
         self._door_open = False
         self._locked = False
@@ -187,15 +188,47 @@ class MockDeviceService(DeviceService):
             if self._arm_countdown == 0:
                 self._enter_state(F.SECST_ARMED)
 
+        self._step_door_alarm()
+
+        # 复刻 NodeC my100mS_callback：已布防 + 有人贴在门口 -> 一级提示（等级 1）。
+        # 等级只在 ARMED 里跟着“有人靠近”走，ALARM 是二级，不能被它降回一级；
+        # 事件文案与 serial_svc 处理真实硬件时保持一致，两条链路演示效果相同。
+        if self._sec_state == F.SECST_ARMED:
+            near = (F.DIST_MIN <= self._distance <= F.DIST_MAX
+                    and self._distance <= self.state.near_threshold)
+            level = F.ALM_NOTICE if near else F.ALM_NONE
+            if level != self._alarm_level:
+                self._alarm_level = level
+                if level == F.ALM_NOTICE:
+                    self._emit_event("security", "warning", "安防提示")
+                else:
+                    self._emit_event("security", "info", "报警解除")
+
+    def _step_door_alarm(self) -> None:
+        """复刻 NodeC UpdateDoorAlarm()：布防下报警跟着门控位的电平走。
+
+        门开就报警、门关就解除，用电平而不是开关门这个动作本身来判——
+        「撤防时门就开着、然后直接布防」也要能报出来。振动引起的报警
+        不走这条路（_alarm_by_door=False），仍然要撤防才解除。
+        """
+        if self._sec_state == F.SECST_ARMED and self._door_open:
+            self._alarm_by_door = True
+            self._enter_state(F.SECST_ALARM)
+        elif (self._sec_state == F.SECST_ALARM and self._alarm_by_door
+              and not self._door_open):
+            self._enter_state(F.SECST_ARMED)
+
     # ------------------------------------------------------------------ 状态机
 
     def _enter_state(self, st: int) -> None:
         if self._sec_state == st:
             return
+        prev = self._sec_state
         self._sec_state = st
         name = F.SECST_NAMES[st]
         if st == F.SECST_DISARMED:
             self._alarm_level = F.ALM_NONE
+            self._alarm_by_door = False
             self._silenced = False
             self._vib_in_window = 0
             self._locked = False
@@ -203,12 +236,17 @@ class MockDeviceService(DeviceService):
         elif st == F.SECST_ARMING:
             self._arm_countdown = ARM_DELAY_S
             self._alarm_level = F.ALM_NONE
+            self._alarm_by_door = False
             self._silenced = False
             self._emit_event("security", "info", f"布防退出延时开始，{ARM_DELAY_S} 秒")
         elif st == F.SECST_ARMED:
             self._alarm_level = F.ALM_NONE
+            self._alarm_by_door = False
+            self._silenced = False
             self._locked = True
-            self._emit_event("security", "info", "已布防，门锁上锁")
+            self._emit_event("security", "info",
+                             "门已关闭，报警解除" if prev == F.SECST_ALARM
+                             else "已布防，门锁上锁")
         elif st == F.SECST_ALARM:
             self._alarm_level = F.ALM_ALARM
             self._locked = True
@@ -223,10 +261,9 @@ class MockDeviceService(DeviceService):
             self._door_count += 1
             self._emit_event("door", "warning" if self._sec_state == F.SECST_ARMED else "info",
                              "门被打开" if self._sec_state != F.SECST_ARMED else "布防状态下门被打开")
-            if self._sec_state == F.SECST_ARMED:
-                self._enter_state(F.SECST_ALARM)
         else:
             self._emit_event("door", "info", "门已关闭")
+        self._step_door_alarm()          # 不等下一拍，点一下就看到结果
         self._publish_state()
 
     def inject_vibration(self) -> None:
@@ -234,6 +271,7 @@ class MockDeviceService(DeviceService):
         self._emit_event("vibration", "info", f"检测到振动（窗口内第 {self._vib_in_window} 次）")
         if self._sec_state == F.SECST_ARMED and self._vib_in_window >= VIB_THRESHOLD:
             self._vib_count += 1
+            self._alarm_by_door = False   # 振动报警不跟着门关自动解除，要撤防
             self._enter_state(F.SECST_ALARM)
         self._publish_state()
 
