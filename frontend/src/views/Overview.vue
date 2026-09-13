@@ -32,7 +32,6 @@ const alarmText=computed(()=>s.value?.security.alarm_level==null?'未知':['无�
 <div><dt>门磁</dt><dd>{{s.security.door_state===null?'未知':s.security.door_state==='open'?'门已打开':'门已关闭'}}</dd></div>
 <div><dt>报警</dt><dd :class="{danger:(s.security.alarm_level??0)>=2}">{{alarmText}}</dd></div>
 <div><dt>通风窗<small>软件状态</small></dt><dd>{{s.env.window_state===null?'未知':s.env.window_state==='open'?'打开':'关闭'}}</dd></div>
-<div><dt>门锁<small>软件状态</small></dt><dd>{{s.security.lock_state===null?'未知':s.security.lock_state==='locked'?'上锁':'未上锁'}}</dd></div>
 </dl></section>
 <section class="panel"><div class="panel-head"><h2>最近事件</h2><RouterLink to="/events">全部记录<ArrowUpRight :size="14"/></RouterLink></div><div v-if="!recent.length" class="empty"><Activity :size="24"/><span>暂无事件记录</span></div><div v-for="(e,i) in recent" :key="e.id??i" class="event-item"><span class="event-marker" :class="e.level"/><div><p>{{e.message}}</p><small>节点 {{e.node}} · {{fmtTime(e.ts)}}</small></div></div></section>
 <section class="panel"><div class="panel-head"><h2>节点连接</h2><span class="muted">RS485 总线</span></div><div v-for="n in nodeList" :key="n.key" class="node-row"><span class="node-avatar">{{n.key}}</span><div><strong>{{n.name}}</strong><small>{{n.role}}</small></div><span class="node-state" :class="{connected:online&&n.info?.online}"><Radio :size="13"/>{{online?(n.info?.online?'在线':'离线'):'未确认'}}</span></div></section>

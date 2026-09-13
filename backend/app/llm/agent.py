@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -18,6 +19,24 @@ from .tools import ToolExecutor, summarize_for_ui, tool_schemas
 log = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 4
+
+# 对最常用、参数明确的执行器命令做一层确定性识别。LLM 的 tool_choice=auto
+# 偶尔会只回复“好的”而不真正调用工具；像“把风扇占空比调到 34%”这种
+# 没有歧义的指令不应依赖模型是否愿意发起 function call。
+_FAN_DUTY_RE = re.compile(
+    r"(?:把|将)?\s*(?:风扇\s*)?(?:PWM\s*)?(?:占空比\s*)?"
+    r"(?:调(?:整)?|设(?:置)?|改)(?:到|为|成)?\s*(\d{1,3})\s*[％%]",
+    re.IGNORECASE,
+)
+
+
+def _explicit_fan_duty(text: str) -> int | None:
+    """识别无歧义的风扇百分比设置指令；疑问、假设和否定句不执行。"""
+    compact = text.strip()
+    if any(word in compact for word in ("不要", "别把", "不用", "无需", "如果", "假如", "会怎样", "怎么样")):
+        return None
+    match = _FAN_DUTY_RE.search(compact)
+    return int(match.group(1)) if match else None
 
 SYSTEM_PROMPT = """你是"寝室管家"系统的助手。这是一套由三块 STC-B 单片机组成的宿舍监控系统：
 NodeA 主控网关、NodeB 环境节点（温度/光照/风扇/通风窗）、NodeC 安防节点（门磁/振动/超声波/门锁）。
@@ -63,6 +82,25 @@ class LLMAgent:
                 "tool_calls": [],
                 "enabled": False,
             }
+
+        # 显式百分比命令走确定性工具路由，避免模型只生成自然语言承诺却没有
+        # function call。设备层仍会执行范围检查、串口下发并等待 NodeB ACK。
+        if not confirmed_tool:
+            latest_user = next(
+                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), ""
+            )
+            duty = _explicit_fan_duty(latest_user)
+            if duty is not None:
+                args = {"mode": "manual", "duty_percent": duty}
+                result = await self.executor.execute("set_fan", args)
+                ui_call = summarize_for_ui("set_fan", args, result)
+                if result.get("ok"):
+                    reply = (f"已将风扇切换为手动模式，占空比设置为 {duty}%，"
+                             "并收到 NodeB 设备回执。")
+                else:
+                    reason = result.get("error") or result.get("verdict") or "设备未确认"
+                    reply = f"风扇占空比未能设置为 {duty}%：{reason}。"
+                return {"reply": reply, "tool_calls": [ui_call], "enabled": True}
 
         # 用户已确认的敏感操作：直接执行，不再过模型
         pre_calls: list[dict] = []

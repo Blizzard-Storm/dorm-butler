@@ -11,7 +11,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from ..config import get_settings
 from ..db import all_settings, session_scope
@@ -102,16 +102,37 @@ async def get_history(
         raise _error(400, "bad_metric", f"不支持的指标: {', '.join(sorted(bad))}")
 
     since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-    columns = [Telemetry.ts] + [getattr(Telemetry, m) for m in wanted]
+    metric_columns = [getattr(Telemetry, m) for m in wanted]
+    columns = [Telemetry.ts] + metric_columns
+    valid = (
+        Telemetry.ts >= since,
+        or_(*(column.is_not(None) for column in metric_columns)),
+    )
     with session_scope() as s:
-        rows = s.execute(
-            select(*columns).where(Telemetry.ts >= since)
-            .order_by(Telemetry.ts).limit(limit)
-        ).all()
+        total = s.scalar(select(func.count()).select_from(Telemetry).where(*valid)) or 0
+        if total <= limit:
+            rows = s.execute(select(*columns).where(*valid).order_by(Telemetry.ts)).all()
+        else:
+            # Keep coverage across the whole requested period instead of returning
+            # only the oldest `limit` rows.  This also drops all-null telemetry rows,
+            # which can otherwise hide valid samples that occur later in the range.
+            stride = (total + limit - 1) // limit
+            ranked = select(
+                *columns,
+                func.row_number().over(order_by=Telemetry.ts).label("sample_no"),
+            ).where(*valid).subquery()
+            sampled_columns = [ranked.c.ts] + [getattr(ranked.c, m) for m in wanted]
+            rows = s.execute(
+                select(*sampled_columns)
+                .where(or_(ranked.c.sample_no % stride == 0, ranked.c.sample_no == total))
+                .order_by(ranked.c.ts)
+                .limit(limit)
+            ).all()
 
     return {
         "minutes": minutes,
         "metrics": wanted,
+        "total_count": total,
         "count": len(rows),
         "points": [
             {"ts": r[0].isoformat(), **{m: r[i + 1] for i, m in enumerate(wanted)}}

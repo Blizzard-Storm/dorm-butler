@@ -3,12 +3,13 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NAlert, NButton, NInput, NSpin, useDialog, useMessage } from 'naive-ui'
 import {
   AlarmClock, ArrowUp, Bell, Bot, CheckCircle2, CircleAlert,
-  SlidersHorizontal, Thermometer, TrendingUp, Wrench, XCircle,
+  SlidersHorizontal, Thermometer, Trash2, TrendingUp, Wrench, XCircle,
 } from 'lucide-vue-next'
 import { ApiError, api } from '../api'
 import type { ToolCallCard } from '../types'
 import { CMD_NAME_TEXT, state } from '../store'
 import BotMascot from '../components/BotMascot.vue'
+import ChatHistoryChart from '../components/ChatHistoryChart.vue'
 
 interface Bubble {
   role: 'user' | 'assistant'
@@ -26,6 +27,53 @@ const llmEnabled = ref<boolean | null>(null)
 const llmReason = ref<string | null>(null)
 const listEl = ref<HTMLElement | null>(null)
 const pageEl = ref<HTMLElement | null>(null)
+
+const HISTORY_KEY = 'dorm-butler.ai-history.v1'
+const HISTORY_LIMIT = 80
+
+function isBubble(value: unknown): value is Bubble {
+  if (!value || typeof value !== 'object') return false
+  const bubble = value as Partial<Bubble>
+  return (bubble.role === 'user' || bubble.role === 'assistant')
+    && typeof bubble.content === 'string'
+}
+
+function restoreHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY)
+    if (!raw) return
+    const saved = JSON.parse(raw)
+    const items = Array.isArray(saved?.history) ? saved.history.filter(isBubble) : []
+    history.value = items.slice(-HISTORY_LIMIT)
+  } catch {
+    localStorage.removeItem(HISTORY_KEY)
+  }
+}
+
+function persistHistory(items: Bubble[]) {
+  if (!items.length) {
+    localStorage.removeItem(HISTORY_KEY)
+    return
+  }
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify({ version: 1, history: items.slice(-HISTORY_LIMIT) }))
+  } catch {
+    // 浏览器禁用存储或空间不足时不影响本轮对话。
+  }
+}
+
+function clearHistory() {
+  dialog.warning({
+    title: '清空本机对话',
+    content: '将删除此浏览器中保存的AI对话记录，设备数据和事件记录不会受影响。',
+    positiveText: '清空对话',
+    negativeText: '取消',
+    onPositiveClick: () => {
+      history.value = []
+      localStorage.removeItem(HISTORY_KEY)
+    },
+  })
+}
 
 /* 让聊天页正好填满视口剩余空间。
 
@@ -50,10 +98,10 @@ const SUGGESTIONS = [
 
 async function loadStatus() {
   try {
-    const st = await api.aiChat([]).catch(() => null)
-    if (st) {
-      llmEnabled.value = st.enabled
-      if (!st.enabled) llmReason.value = st.reply
+    const info = await api.systemInfo().catch(() => null)
+    if (info) {
+      llmEnabled.value = info.llm.enabled
+      if (!info.llm.enabled) llmReason.value = info.llm.reason
     }
   } catch { /* 忽略 */ }
 }
@@ -157,6 +205,7 @@ const offline = computed(() => !state.value?.link.connected)
 let ro: ResizeObserver | undefined
 
 onMounted(() => {
+  restoreHistory()
   void loadStatus()
   fitHeight()
   window.addEventListener('resize', fitHeight)
@@ -172,6 +221,7 @@ onUnmounted(() => {
 
 // 顶部提示条是根据状态显隐的，变化后要重新量
 watch([offline, llmEnabled], () => void nextTick(fitHeight))
+watch(history, persistHistory, { deep: true })
 </script>
 
 <template>
@@ -189,6 +239,11 @@ watch([offline, llmEnabled], () => void nextTick(fitHeight))
 
     <div ref="listEl" class="chat">
       <div class="column">
+        <div v-if="!empty" class="history-bar">
+          <span>对话已保存在此浏览器</span>
+          <button type="button" @click="clearHistory"><Trash2 :size="13" /> 清空对话</button>
+        </div>
+
         <div v-if="empty" class="hero">
           <BotMascot :size="86" :awake="!offline" />
           <p class="hero-sub">
@@ -224,6 +279,11 @@ watch([offline, llmEnabled], () => void nextTick(fitHeight))
                     <code v-if="Object.keys(t.args).length" class="tool-args">{{ JSON.stringify(t.args) }}</code>
                     <div class="tool-verdict">{{ t.verdict }}</div>
                     <div v-if="t.command_id" class="tool-id">命令 {{ t.command_id }}</div>
+                    <ChatHistoryChart
+                      v-if="t.tool === 'get_history' && t.ok"
+                      :metric="String(t.args.metric ?? '')"
+                      :minutes="Number(t.args.minutes ?? 10)"
+                    />
                   </div>
                 </div>
               </div>
@@ -277,6 +337,17 @@ watch([offline, llmEnabled], () => void nextTick(fitHeight))
 
 .chat { flex: 1; overflow-y: auto; padding: 4px 0 4px; }
 .column { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; padding: 0 6px; }
+
+.history-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 0 2px 2px; color: var(--muted); font-size: 11px;
+}
+.history-bar button {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--muted);
+  font: inherit; cursor: pointer;
+}
+.history-bar button:hover { color: #c34545; background: #c345450c; }
 
 .hero { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-bottom: 4px; }
 .hero-sub { margin: 0; font-size: 14px; color: var(--muted); text-align: center; line-height: 1.6; }

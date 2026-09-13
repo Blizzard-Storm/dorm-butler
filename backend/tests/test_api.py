@@ -121,6 +121,10 @@ def test_history_and_metric_validation(client):
     ok = client.get("/api/history", params={"minutes": 10, "metrics": "temp_c,fan_duty"})
     assert ok.status_code == 200
     assert ok.json()["metrics"] == ["temp_c", "fan_duty"]
+    assert all(
+        point["temp_c"] is not None or point["fan_duty"] is not None
+        for point in ok.json()["points"]
+    )
 
     bad = client.get("/api/history", params={"minutes": 10, "metrics": "drop_table"})
     assert bad.status_code == 400

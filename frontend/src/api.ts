@@ -53,7 +53,7 @@ export const api = {
   systemInfo: () => request<SystemInfo>('/api/system/info'),
 
   history: (minutes: number, metrics: string[]) =>
-    request<{ minutes: number; metrics: string[]; count: number; points: HistoryPoint[] }>(
+    request<{ minutes: number; metrics: string[]; total_count: number; count: number; points: HistoryPoint[] }>(
       `/api/history?minutes=${minutes}&metrics=${metrics.join(',')}`,
     ),
 
