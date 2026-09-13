@@ -10,7 +10,7 @@ if (-not (Test-Path -LiteralPath $python)) {
     throw "Python virtual environment not found. Run setup.cmd first: $python"
 }
 if (-not (Test-Path -LiteralPath $frontendIndex)) {
-    throw 'frontend/dist/index.html was not found. Run build-and-serve.cmd first.'
+    throw 'frontend/dist/index.html was not found. Restore the bundled frontend/dist directory before starting.'
 }
 
 $healthy = $false

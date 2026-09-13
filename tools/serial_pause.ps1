@@ -29,7 +29,7 @@ try {
         }
     if ($procs) {
         $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-        Write-Host "  已停止 $($procs.Count) 个后端进程，烧完后需要重新运行 start-backend.cmd。"
+        Write-Host "  已停止 $($procs.Count) 个后端进程，烧完后请重新双击 启动寝室管家.cmd。"
     } else {
         Write-Host "  后端本来就没在跑，串口本来就是空的。"
     }

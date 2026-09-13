@@ -15,7 +15,7 @@ try {
     Write-Host "  已恢复，后端会自动重新连接板子，网页不用刷新。"
 } catch {
     Write-Host "  没能连上后端接口。如果你是用「烧录前-释放串口.cmd」的降级方案"
-    Write-Host "  整个停掉了后端，这里需要你手动运行 start-backend.cmd 重新启动。"
+    Write-Host "  整个停掉了后端，这里需要你手动双击 启动寝室管家.cmd 重新启动。"
 }
 
 Write-Host ""

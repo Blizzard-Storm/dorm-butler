@@ -86,7 +86,7 @@ echo     本机访问：  http://localhost:8000
 echo     手机访问：  先运行 ipconfig 查 IPv4 地址，再开 http://那个地址:8000
 echo.
 echo     关掉这个黑窗口 = 停止服务
-echo     下次启动直接双击 start-backend.cmd，不用再跑本文件
+echo     下次启动直接双击 启动寝室管家.cmd，不用再跑本文件
 echo.
 
 start "" http://localhost:8000
